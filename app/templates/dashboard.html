@@ -1,0 +1,364 @@
+{% extends "base.html" %}
+
+{% block head %}
+<!-- Load Plotly -->
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<!-- Load dashboard JavaScript -->
+<script src="{{ url_for('static', path='js/dashboard.js') }}" defer></script>
+
+<style>
+    /* Dashboard Layout */
+    .dashboard-container {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 24px;
+    }
+
+    .page-header {
+        margin-bottom: 24px;
+    }
+
+    .main-title {
+        color: #1a56db;
+        font-size: 2rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .subtitle {
+        color: #6b7280;
+        font-size: 1.1rem;
+    }
+
+    /* Summary Section */
+    .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 24px;
+        margin-bottom: 32px;
+    }
+
+    .summary-card {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        padding: 24px;
+        height: 100%;
+    }
+
+    .summary-card.threats {
+        border-left: 4px solid #ef4444;
+    }
+
+    .summary-card.landscape {
+        border-left: 4px solid #6b7280;
+    }
+
+    .summary-card.strategies {
+        border-left: 4px solid #22c55e;
+    }
+
+    .card-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: #1f2937;
+        margin-bottom: 16px;
+    }
+
+    /* Visualization Grid */
+    .visualization-grid {
+        display: grid;
+        grid-template-columns: 1fr 2fr;
+        gap: 24px;
+        margin-bottom: 32px;
+    }
+
+    @media (max-width: 1024px) {
+        .visualization-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    .visualization-card {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        padding: 24px;
+        height: 100%;
+    }
+
+    /* Chart Containers */
+    .chart-container {
+        min-height: 400px;
+        width: 100%;
+    }
+
+    .wordcloud-container {
+        min-height: 600px;
+        width: 100%;
+    }
+
+    /* Topics List */
+    .topics-list {
+        margin-top: 20px;
+    }
+
+    .topic-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 16px;
+        margin-bottom: 8px;
+        border-radius: 8px;
+        background: #f9fafb;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    .topic-item:hover {
+        transform: translateX(8px);
+        background: #f3f4f6;
+    }
+
+    .topic-item.positive { border-left: 4px solid #22c55e; }
+    .topic-item.negative { border-left: 4px solid #ef4444; }
+    .topic-item.neutral { border-left: 4px solid #6b7280; }
+
+    /* Modals */
+    .modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+    }
+
+    .modal-content {
+        background: white;
+        border-radius: 12px;
+        max-width: 800px;
+        width: 90%;
+        max-height: 90vh;
+        overflow-y: auto;
+    }
+
+    .modal-header {
+        padding: 16px 24px;
+        border-bottom: 1px solid #e5e7eb;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .modal-body {
+        padding: 24px;
+    }
+
+    .modal-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: #1f2937;
+        margin: 0;
+    }
+
+    .modal-close {
+        background: none;
+        border: none;
+        font-size: 1.5rem;
+        color: #6b7280;
+        cursor: pointer;
+        padding: 4px;
+        line-height: 1;
+    }
+
+    /* Context Items */
+    .context-item {
+        background: #f9fafb;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 16px;
+    }
+
+    .context-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+
+    .context-document {
+        font-weight: 600;
+        color: #4b5563;
+    }
+
+    .context-text {
+        line-height: 1.6;
+        color: #1f2937;
+    }
+
+    mark {
+        background: #fef3c7;
+        color: #92400e;
+        padding: 0 2px;
+        border-radius: 2px;
+    }
+
+    /* Stats Grid */
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 16px;
+        margin-bottom: 24px;
+        background: #f9fafb;
+        padding: 16px;
+        border-radius: 8px;
+    }
+
+    .stat-item {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .stat-label {
+        font-size: 0.875rem;
+        color: #6b7280;
+    }
+
+    .stat-value {
+        font-size: 1.125rem;
+        font-weight: 600;
+        color: #1f2937;
+    }
+
+    /* Loading States */
+    .loading {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 200px;
+    }
+
+    .loading::after {
+        content: "Loading...";
+        color: #6b7280;
+    }
+
+    /* Error States */
+    .error-message {
+        background: #fee2e2;
+        border-left: 4px solid #ef4444;
+        color: #991b1b;
+        padding: 16px;
+        border-radius: 8px;
+        margin: 16px 0;
+    }
+
+    /* Processing Logs */
+    .logs-container {
+        margin-top: 32px;
+    }
+
+    .log-step {
+        background: #e3f2fd;
+        border-left: 4px solid #2196f3;
+        padding: 8px 12px;
+        margin-bottom: 8px;
+        border-radius: 0 4px 4px 0;
+    }
+
+    .log-error {
+        background: #fee2e2;
+        border-left: 4px solid #ef4444;
+        padding: 8px 12px;
+        margin-bottom: 8px;
+        border-radius: 0 4px 4px 0;
+        color: #991b1b;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="dashboard-container">
+    <!-- Header -->
+    <header class="page-header">
+        <h1 class="main-title">AI in Financial Crime: A Rising Digital Arms Race</h1>
+        <p class="subtitle">Analysis of emerging trends in AI-powered financial crimes and detection systems</p>
+    </header>
+
+    <!-- Summary Grid -->
+    <div class="summary-grid">
+        <div class="summary-card threats">
+            <h2 class="card-title">Key Threats</h2>
+            <div class="card-content">
+                {{ key_threats | safe }}
+            </div>
+        </div>
+        <div class="summary-card landscape">
+            <h2 class="card-title">Current Landscape</h2>
+            <div class="card-content">
+                {{ current_landscape | safe }}
+            </div>
+        </div>
+        <div class="summary-card strategies">
+            <h2 class="card-title">Defense Strategies</h2>
+            <div class="card-content">
+                {{ defense_strategies | safe }}
+            </div>
+        </div>
+    </div>
+
+    <!-- Visualization Grid -->
+    <div class="visualization-grid">
+        <!-- Topics Analysis -->
+        <div class="visualization-card">
+            <h2 class="card-title">Key Topics Analysis</h2>
+            <div id="topics-chart" class="chart-container">
+                <div class="loading"></div>
+            </div>
+            <div class="topics-list">
+                {% for topic in topics_data %}
+                    <div class="topic-item {{ topic.sentiment }}" data-topic="{{ topic.text }}">
+                        <span class="topic-text">{{ topic.text }}</span>
+                        <span class="topic-frequency">{{ topic.frequency }}</span>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Word Cloud -->
+        <div class="visualization-card">
+            <h2 class="card-title">Word Frequency Analysis</h2>
+            <div id="wordcloud-chart" class="wordcloud-container">
+                <div class="loading"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Processing Logs -->
+    {% if processing_logs and (processing_logs.steps or processing_logs.errors) %}
+    <div class="visualization-card logs-container">
+        <h2 class="card-title">Processing Logs</h2>
+        {% for step in processing_logs.steps %}
+            <div class="log-step">{{ step }}</div>
+        {% endfor %}
+        {% for error in processing_logs.errors %}
+            <div class="log-error">{{ error }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+
+<!-- Data for JavaScript -->
+<script id="dashboardData" type="application/json">
+    {
+        "wordcloud_data": {{ wordcloud_data | tojson }},
+        "topics_data": {{ topics_data | tojson }},
+        "documents": {{ documents | tojson }}
+    }
+</script>
+{% endblock %}

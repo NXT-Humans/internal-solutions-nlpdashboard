@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <h1>Welcome to the NLP Dashboard</h1>
+    <p>Upload a ZIP file containing PDF, DOCX, CSV, TXT, or JSON files. The NLP pipeline will run automatically, and you will be redirected to a results dashboard.</p>
+
+    <form action="{{ url_for('upload_zip') }}" method="post" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".zip" required>
+        <button type="submit">Upload ZIP</button>
+    </form>
+
+    {% if processing_logs %}
+    <h2>Processing Logs</h2>
+    <div id="logs-section">
+        {% if processing_logs.steps %}
+            {% for step in processing_logs.steps %}
+                <div class="log-step">{{ step }}</div>
+            {% endfor %}
+        {% endif %}
+        
+        {% if processing_logs.errors %}
+            {% for error in processing_logs.errors %}
+                <div class="log-error">{{ error }}</div>
+            {% endfor %}
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
