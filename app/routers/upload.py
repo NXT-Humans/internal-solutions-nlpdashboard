@@ -12,8 +12,9 @@ import uuid
 import logging
 from pathlib import Path
 from fastapi import APIRouter, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from typing import Set, Dict, Any
+from datetime import datetime
 
 from app.log_store import PROCESSING_LOGS, PIPELINE_RESULTS
 from app.utils.file_parser import parse_zip_file
@@ -23,13 +24,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="", tags=["Upload"])
 
-# Valid file extensions
-VALID_EXTENSIONS: Set[str] = {
+# Define valid file extensions
+VALID_FILE_EXTENSIONS: Set[str] = {
     '.pdf', '.docx', '.txt', '.csv', '.json'
 }
 
-# Files and patterns to ignore
-IGNORE_PATTERNS: Set[str] = {
+# Define system files to ignore
+IGNORED_FILE_PATTERNS: Set[str] = {
     '__MACOSX',
     '._',
     '.DS_Store',
@@ -38,106 +39,103 @@ IGNORE_PATTERNS: Set[str] = {
 }
 
 @router.post("/zip")
-async def upload_zip(file: UploadFile = File(...)) -> Dict[str, Any]:
-    """
-    Handle ZIP file upload containing documents for analysis.
-    
-    Args:
-        file: Uploaded ZIP file
-        
-    Returns:
-        Redirect to dashboard or error response
-    """
-    PROCESSING_LOGS["steps"].append("Received ZIP file upload request")
+async def upload_zip(file: UploadFile = File(...)):
+    """Handle ZIP file upload containing documents for analysis"""
+    # Initialize processing logs
+    PROCESSING_LOGS["steps"] = []
+    PROCESSING_LOGS["errors"] = []
+    PROCESSING_LOGS["start_time"] = datetime.now().isoformat()
+    PROCESSING_LOGS["steps"].append("Started file upload processing")
 
     # Validate file type
     if not file.filename.lower().endswith('.zip'):
-        error_msg = "File must be a ZIP archive"
-        PROCESSING_LOGS["errors"].append(error_msg)
-        raise HTTPException(status_code=400, detail=error_msg)
+        error_message = "File must be a ZIP archive"
+        PROCESSING_LOGS["errors"].append(error_message)
+        raise HTTPException(status_code=400, detail=error_message)
 
     # Create unique temporary directory
     temp_folder = Path(f"temp_{uuid.uuid4()}")
     try:
         temp_folder.mkdir(parents=True, exist_ok=True)
         zip_path = temp_folder / file.filename
-
+        
         # Save uploaded file
+        PROCESSING_LOGS["steps"].append("Saving uploaded file")
         with open(zip_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        PROCESSING_LOGS["steps"].append(f"ZIP file saved: {zip_path}")
 
         # Extract valid files
+        PROCESSING_LOGS["steps"].append("Extracting ZIP contents")
         extracted_files = []
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
             for zip_info in zip_ref.filelist:
                 # Skip ignored files and empty directories
-                if any(pattern in zip_info.filename for pattern in IGNORE_PATTERNS):
+                if any(pattern in zip_info.filename for pattern in IGNORED_FILE_PATTERNS):
                     continue
                 if zip_info.filename.endswith('/'):
                     continue
                     
                 # Check file extension
-                ext = Path(zip_info.filename).suffix.lower()
-                if ext in VALID_EXTENSIONS:
+                file_extension = Path(zip_info.filename).suffix.lower()
+                if file_extension in VALID_FILE_EXTENSIONS:
                     zip_ref.extract(zip_info, temp_folder)
                     extracted_files.append(zip_info.filename)
                     PROCESSING_LOGS["steps"].append(f"Extracted: {zip_info.filename}")
 
         if not extracted_files:
-            raise HTTPException(
-                status_code=400,
-                detail="No valid documents found in ZIP file"
-            )
-
-        PROCESSING_LOGS["steps"].append("ZIP extracted successfully")
+            error_message = "No valid documents found in ZIP file"
+            PROCESSING_LOGS["errors"].append(error_message)
+            return RedirectResponse(url="/", status_code=303)
 
         # Parse extracted documents
+        PROCESSING_LOGS["steps"].append("Parsing extracted files")
         try:
-            texts_by_doc = parse_zip_file(temp_folder, PROCESSING_LOGS)
-            PROCESSING_LOGS["steps"].append("All files parsed successfully")
+            texts_by_document = parse_zip_file(temp_folder, PROCESSING_LOGS)
+            PROCESSING_LOGS["steps"].append("Successfully parsed all files")
         except Exception as error:
-            PROCESSING_LOGS["errors"].append(f"Error parsing files: {str(error)}")
-            raise HTTPException(status_code=500, detail=str(error))
+            error_message = f"Error parsing files: {str(error)}"
+            PROCESSING_LOGS["errors"].append(error_message)
+            return RedirectResponse(url="/", status_code=303)
 
         # Run NLP pipeline
+        PROCESSING_LOGS["steps"].append("Starting NLP analysis pipeline")
         pipeline = NLPPipeline(PROCESSING_LOGS)
         try:
-            results = pipeline.process(texts_by_doc)
+            results = pipeline.process(texts_by_document)
             PIPELINE_RESULTS.clear()
             PIPELINE_RESULTS.update(results)
-            PROCESSING_LOGS["steps"].append("NLP pipeline results stored")
+            PROCESSING_LOGS["steps"].append("NLP pipeline completed successfully")
+            PROCESSING_LOGS["completion_time"] = datetime.now().isoformat()
         except Exception as error:
-            PROCESSING_LOGS["errors"].append(f"NLP pipeline error: {str(error)}")
-            raise HTTPException(status_code=500, detail=str(error))
+            error_message = f"NLP pipeline error: {str(error)}"
+            PROCESSING_LOGS["errors"].append(error_message)
+            return RedirectResponse(url="/", status_code=303)
 
-        return RedirectResponse(url="/dashboard", status_code=303)
-
-    except HTTPException:
-        raise
-    except Exception as error:
-        error_msg = f"Error processing upload: {str(error)}"
-        PROCESSING_LOGS["errors"].append(error_msg)
-        logger.error(error_msg, exc_info=True)
-        raise HTTPException(status_code=500, detail=error_msg)
-    finally:
         # Clean up temporary files
         try:
             if zip_path.exists():
                 os.remove(zip_path)
-            if temp_folder.exists():
-                shutil.rmtree(temp_folder)
+            PROCESSING_LOGS["steps"].append("Cleaned up temporary files")
         except Exception as error:
             logger.error(f"Error cleaning up temporary files: {str(error)}")
 
+        # Redirect to dashboard on success
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    except Exception as error:
+        error_message = f"Error processing upload: {str(error)}"
+        logger.error(error_message, exc_info=True)
+        PROCESSING_LOGS["errors"].append(error_message)
+        # On error, redirect back to upload page where status will be shown
+        return RedirectResponse(url="/", status_code=303)
+
 @router.get("/upload-status")
 async def get_upload_status() -> Dict[str, Any]:
-    """
-    Get current upload and processing status.
-    """
+    """Return current upload and processing status"""
     return {
         "status": "error" if PROCESSING_LOGS["errors"] else "success",
         "steps": PROCESSING_LOGS["steps"],
         "errors": PROCESSING_LOGS["errors"],
-        "timestamp": PROCESSING_LOGS.get("timestamp")
+        "timestamp": PROCESSING_LOGS.get("start_time"),
+        "completion_time": PROCESSING_LOGS.get("completion_time")
     }

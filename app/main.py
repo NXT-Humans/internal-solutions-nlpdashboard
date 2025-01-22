@@ -7,18 +7,18 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
 import os
 import json
+import spacy
 from typing import Dict, Any, List
 from textblob import TextBlob
 from datetime import datetime
+import numpy as np
+from collections import Counter
+from pathlib import Path
 
-import numpy as np  # For converting np.int64 / np.float64 to Python types if needed
-
-# Import routers and configurations
 from app.routers import upload, analyze, visualize
 from app.log_store import PROCESSING_LOGS, PIPELINE_RESULTS
 from app.config import Config
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -29,55 +29,107 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI application
-app = FastAPI(
-    title="NLP Dashboard",
-    description="Advanced text analysis and visualization platform with context-aware insights",
-    version="1.0.0"
-)
+try:
+    nlp = spacy.load('en_core_web_sm')
+except OSError:
+    logger.info("Downloading spaCy model...")
+    os.system('python -m spacy download en_core_web_sm')
+    nlp = spacy.load('en_core_web_sm')
 
-# Configure CORS
+app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount static files directory
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-# Initialize Jinja2 templates
 templates = Jinja2Templates(directory="app/templates")
 
-# Include routers
 app.include_router(upload.router)
 app.include_router(analyze.router)
 app.include_router(visualize.router)
 
-################################
-#        Utility Methods
-################################
-
 def initialize_processing_logs():
     """Initialize or reset processing logs"""
     PROCESSING_LOGS.clear()
-    PROCESSING_LOGS["steps"] = []
-    PROCESSING_LOGS["errors"] = []
-    PROCESSING_LOGS["start_time"] = datetime.now().isoformat()
+    PROCESSING_LOGS.update({
+        "steps": [],
+        "errors": [],
+        "timestamps": [],
+        "stage_details": {},
+        "files_processed": {},
+        "current_stage": None,
+        "start_time": datetime.now().isoformat()
+    })
     logger.info("Processing logs initialized")
 
-def fix_np_types(obj: Any) -> Any:
-    """
-    Recursively convert NumPy dtypes (int64, float64, ndarrays, etc.)
-    to native Python types. Prevents JSON serialization errors when
-    using Jinja's tojson filter.
-    """
+def generate_document_title(content: str, topics: List[str], summary: str) -> str:
+    """Generate meaningful title from document content"""
+    if not content:
+        return "Document Analysis Dashboard"
+        
+    document_themes = []
+    document_entities = []
+    
+    # Process document content with spaCy
+    document = nlp(content[:10000])  # Process first 10000 chars for efficiency
+    
+    # Extract key entities and themes
+    for entity in document.ents:
+        if entity.label_ in ['ORG', 'PRODUCT', 'GPE', 'EVENT', 'TOPIC']:
+            document_entities.append(entity.text)
+    
+    # Extract key noun phrases and themes
+    key_phrases = []
+    for chunk in document.noun_chunks:
+        if len(chunk.text.split()) >= 2:  # Multi-word phrases only
+            key_phrases.append(chunk.text)
+            
+    # Use word frequency for theme detection
+    word_frequencies = Counter([
+        token.text.lower() for token in document 
+        if not token.is_stop and not token.is_punct and len(token.text) > 3
+    ])
+    document_themes = [word for word, frequency in word_frequencies.most_common(3)]
+    
+    # Generate title using extracted information
+    if document_entities and key_phrases:
+        # Use most relevant entity and phrase
+        return f"Analysis of {document_entities[0]}: {key_phrases[0].title()}"
+    
+    elif topics and topics[0]:
+        # Use main topic with context
+        main_topic = topics[0]
+        if document_themes:
+            return f"{main_topic.title()}: {document_themes[0].title()} Analysis"
+        return f"{main_topic.title()} Analysis Report"
+    
+    elif summary:
+        # Generate from summary content
+        summary_document = nlp(summary[:500])
+        for sentence in summary_document.sents:
+            # Use first meaningful sentence
+            clean_sentence = sentence.text.strip()
+            if len(clean_sentence.split()) > 3:
+                return clean_sentence.title()
+    
+    # Fallback to any available themes
+    if document_themes:
+        return f"{document_themes[0].title()}: Document Analysis"
+        
+    return "Document Analysis Report"
+
+def fix_numpy_types(obj: Any) -> Any:
+    """Convert NumPy types to Python native types"""
     if isinstance(obj, dict):
-        return {k: fix_np_types(v) for k, v in obj.items()}
+        return {k: fix_numpy_types(v) for k, v in obj.items()}
     elif isinstance(obj, list):
-        return [fix_np_types(x) for x in obj]
+        return [fix_numpy_types(x) for x in obj]
     elif isinstance(obj, np.integer):
         return int(obj)
     elif isinstance(obj, np.floating):
@@ -86,36 +138,10 @@ def fix_np_types(obj: Any) -> Any:
         return obj.tolist()
     return obj
 
-def chunk_text_if_needed(text: str, max_tokens: int = 512) -> List[str]:
-    """
-    Break a large string into multiple pieces, each up to `max_tokens` words.
-    Prevents sending overly long sequences to huggingface/transformers models.
-
-    Args:
-        text: The full input string.
-        max_tokens: Maximum number of tokens (words) per chunk.
-
-    Returns:
-        A list of chunked strings, each below the token limit.
-    """
-    # Simple word-based approach. For more precise behavior, you could do
-    # actual BPE tokenization with the huggingface tokenizer.
-    words = text.split()
-    chunks = []
-    for i in range(0, len(words), max_tokens):
-        chunk_slice = words[i:i + max_tokens]
-        chunk_str = " ".join(chunk_slice)
-        chunks.append(chunk_str)
-    return chunks
-
-################################
-#   App Lifecycle Events
-################################
-
 @app.on_event("startup")
 async def startup_event():
     """Application startup event handler"""
-    logger.info("Starting up NLP Dashboard application")
+    logger.info("Starting up application")
     initialize_processing_logs()
     
     required_directories = {
@@ -138,13 +164,11 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Application shutdown event handler"""
-    logger.info("Shutting down NLP Dashboard application")
+    logger.info("Shutting down application")
     
-    # Clear global stores
     PIPELINE_RESULTS.clear()
     PROCESSING_LOGS["end_time"] = datetime.now().isoformat()
     
-    # Clean up temporary files
     temp_directory = "temp"
     if os.path.exists(temp_directory):
         for item in os.listdir(temp_directory):
@@ -157,16 +181,9 @@ async def shutdown_event():
             except Exception as error:
                 logger.error(f"Error cleaning up {item_path}: {error}")
 
-
-################################
-#  Error / Exception Handlers
-################################
-
-from starlette.exceptions import HTTPException as StarletteHTTPException
-
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    """Handle HTTP exceptions and render error template"""
+    """Handle HTTP exceptions"""
     logger.error(f"HTTP error occurred: {exc.detail}")
     return templates.TemplateResponse(
         "error.html",
@@ -174,14 +191,13 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
             "request": request,
             "error_code": exc.status_code,
             "error_message": exc.detail,
-            "title": f"Error {exc.status_code}"
         },
         status_code=exc.status_code
     )
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """Handle general exceptions and render error template"""
+    """Handle general exceptions"""
     logger.error(f"Unhandled exception occurred: {str(exc)}", exc_info=True)
     return templates.TemplateResponse(
         "error.html",
@@ -189,15 +205,9 @@ async def general_exception_handler(request: Request, exc: Exception):
             "request": request,
             "error_code": 500,
             "error_message": "An unexpected error occurred. Please try again later.",
-            "title": "Internal Server Error"
         },
         status_code=500
     )
-
-
-################################
-#           Routes
-################################
 
 @app.get("/")
 async def home(request: Request):
@@ -207,104 +217,82 @@ async def home(request: Request):
         "index.html",
         {
             "request": request,
-            "title": "NLP Dashboard - Home",
             "processing_logs": PROCESSING_LOGS if PROCESSING_LOGS.get("steps") or PROCESSING_LOGS.get("errors") else None
         }
     )
 
 @app.get("/dashboard")
 async def dashboard(request: Request):
-    """
-    Render dashboard with analysis results and document context.
-    Uses chunking to avoid passing extremely large strings
-    into any huggingface or large language model calls.
-    """
+    """Render dashboard with analysis results"""
     logger.info("Rendering dashboard page")
     
-    # Initialize default data structures
-    summary_sections = {
-        "key_threats": "No threat analysis available.",
-        "current_landscape": "No landscape analysis available.",
-        "defense_strategies": "No defense strategies available."
-    }
-
     if not PIPELINE_RESULTS:
-        logger.warning("No pipeline results available")
-        template_data = {
-            "request": request,
-            "title": "AI Financial Crime Analysis Dashboard",
-            "key_threats": summary_sections["key_threats"],
-            "current_landscape": summary_sections["current_landscape"],
-            "defense_strategies": summary_sections["defense_strategies"],
-            "topics_data": [{"text": "No topics available", "frequency": 1, "sentiment_score": 0, "sentiment": "neutral"}],
-            "wordcloud_data": {"no data": {"frequency": 1, "sentiment": 0}},
-            "documents": {},
-            "processing_logs": PROCESSING_LOGS
-        }
-    else:
-        logger.info(f"Processing pipeline results with keys: {PIPELINE_RESULTS.keys()}")
+        logger.warning("No analysis results available")
+        return templates.TemplateResponse(
+            "dashboard.html",
+            {
+                "request": request,
+                "processing_status": PROCESSING_LOGS
+            }
+        )
+
+    try:
+        # Process analysis results
+        cleaned_results = fix_numpy_types(PIPELINE_RESULTS)
         
-        # Convert all NumPy types in PIPELINE_RESULTS to Python standard types
-        cleaned_results = fix_np_types(PIPELINE_RESULTS)
-
-        # If there's a large global_summary, chunk it
-        if "global_summary" in cleaned_results:
-            # Example: if the summary is too large, break it into multiple parts
-            # so that any huggingface-based summarization or embedding won't exceed max tokens
-            chunked_summaries = []
-            summary_chunks = chunk_text_if_needed(cleaned_results["global_summary"], max_tokens=512)
-            for chunk in summary_chunks:
-                # You could pass each chunk to your summarizer or pipeline here
-                # Instead of placeholders, we simply store them for demonstration:
-                chunked_summaries.append(chunk)
-
-            # Rejoin or pass to process_summary_sections
-            combined_summary = ". ".join(chunked_summaries)
-            summary_sections = process_summary_sections(combined_summary)
-
-        # Process topics with sentiment and context
+        # Extract all text content for analysis
+        document_texts = []
+        for document_data in cleaned_results.get("documents", {}).values():
+            document_texts.extend(document_data.get("cleaned_paragraphs", []))
+        
+        combined_text = " ".join(document_texts)
+        
+        # Generate dynamic title from content
+        document_title = generate_document_title(
+            combined_text,
+            cleaned_results.get("global_topics", []),
+            cleaned_results.get("global_summary", "")
+        )
+        
+        # Process document sections
+        summary_sections = process_summary_sections(cleaned_results.get("global_summary", ""))
+        
+        # Process topics with context and sentiment
         topics_data = []
-        if "global_topics" in cleaned_results:
-            for topic in cleaned_results["global_topics"]:
-                sentiment_score = analyze_sentiment(topic)
-                topic_frequency = count_topic_frequency(topic, cleaned_results.get("documents", {}))
-                topic_contexts = find_topic_contexts(topic, cleaned_results.get("documents", {}))
-                
-                topics_data.append({
-                    "text": topic,
-                    "frequency": topic_frequency,
-                    "sentiment_score": sentiment_score,
-                    "sentiment": categorize_sentiment(sentiment_score),
-                    "contexts": topic_contexts
-                })
+        for topic in cleaned_results.get("global_topics", []):
+            sentiment_score = analyze_sentiment(topic)
+            topic_contexts = find_topic_contexts(topic, cleaned_results.get("documents", {}))
+            topics_data.append({
+                "text": topic,
+                "frequency": count_topic_frequency(topic, cleaned_results.get("documents", {})),
+                "sentiment_score": sentiment_score,
+                "sentiment": categorize_sentiment(sentiment_score),
+                "contexts": topic_contexts
+            })
         
-        # Process wordcloud with sentiment and context
+        # Process word cloud data
         wordcloud_data = {}
-        if "global_wordcloud_data" in cleaned_results:
-            for word, frequency in cleaned_results["global_wordcloud_data"].items():
-                sentiment_score = analyze_sentiment(word)
-                word_contexts = find_topic_contexts(word, cleaned_results.get("documents", {}))
-                
-                wordcloud_data[word] = {
-                    "frequency": frequency,
-                    "sentiment": sentiment_score,
-                    "contexts": word_contexts
-                }
+        for word, frequency in cleaned_results.get("global_wordcloud_data", {}).items():
+            sentiment_score = analyze_sentiment(word)
+            word_contexts = find_topic_contexts(word, cleaned_results.get("documents", {}))
+            wordcloud_data[word] = {
+                "frequency": frequency,
+                "sentiment": sentiment_score,
+                "contexts": word_contexts
+            }
         
-        # Process documents for context lookup
+        # Process individual documents
         documents_data = {}
-        if "documents" in cleaned_results:
-            for doc_name, doc_data in cleaned_results["documents"].items():
-                documents_data[doc_name] = {
-                    "cleaned_paragraphs": doc_data.get("cleaned_paragraphs", []),
-                    "raw_paragraphs": doc_data.get("raw_paragraphs", []),
-                    "paragraph_sentiments": doc_data.get("paragraph_sentiments", []),
-                    "summary": doc_data.get("summary", "No summary available")
-                }
+        for document_name, document_data in cleaned_results.get("documents", {}).items():
+            documents_data[document_name] = {
+                "cleaned_paragraphs": document_data.get("cleaned_paragraphs", []),
+                "paragraph_sentiments": document_data.get("paragraph_sentiments", []),
+                "summary": document_data.get("summary", "")
+            }
         
         template_data = {
             "request": request,
-            "title": "AI Financial Crime Analysis Dashboard",
+            "title": document_title,
             "key_threats": summary_sections["key_threats"],
             "current_landscape": summary_sections["current_landscape"],
             "defense_strategies": summary_sections["defense_strategies"],
@@ -314,13 +302,11 @@ async def dashboard(request: Request):
             "processing_logs": PROCESSING_LOGS
         }
         
-        logger.info(
-            f"Dashboard data prepared - Topics: {len(topics_data)}, "
-            f"Wordcloud terms: {len(wordcloud_data)}, "
-            f"Documents: {len(documents_data)}"
-        )
-    
-    return templates.TemplateResponse("dashboard.html", template_data)
+        return templates.TemplateResponse("dashboard.html", template_data)
+        
+    except Exception as error:
+        logger.error(f"Error processing dashboard data: {str(error)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error processing analysis results: {str(error)}")
 
 def process_summary_sections(summary_text: str) -> Dict[str, str]:
     """Process summary text into themed sections"""
@@ -341,7 +327,7 @@ def process_summary_sections(summary_text: str) -> Dict[str, str]:
         "defense_strategies": []
     }
     
-    sentences = [s.strip() + "." for s in summary_text.split(".") if s.strip()]
+    sentences = [sentence.strip() + "." for sentence in summary_text.split(".") if sentence.strip()]
     
     for sentence in sentences:
         sentence_lower = sentence.lower()
@@ -353,13 +339,13 @@ def process_summary_sections(summary_text: str) -> Dict[str, str]:
             sections["current_landscape"].append(sentence)
     
     return {
-        "key_threats": " ".join(sections["key_threats"]) or "No immediate threats identified.",
+        "key_threats": " ".join(sections["key_threats"]) or "No significant threats identified in analysis.",
         "current_landscape": " ".join(sections["current_landscape"]) or "No landscape analysis available.",
-        "defense_strategies": " ".join(sections["defense_strategies"]) or "No defense strategies identified."
+        "defense_strategies": " ".join(sections["defense_strategies"]) or "No strategies identified in content."
     }
 
 def analyze_sentiment(text: str) -> float:
-    """Analyze text sentiment using TextBlob"""
+    """Analyze text sentiment"""
     try:
         return TextBlob(text).sentiment.polarity
     except Exception as error:
@@ -367,7 +353,7 @@ def analyze_sentiment(text: str) -> float:
         return 0.0
 
 def categorize_sentiment(score: float) -> str:
-    """Categorize sentiment score into positive, negative, or neutral"""
+    """Categorize sentiment score"""
     if score < -0.1:
         return "negative"
     elif score > 0.1:
@@ -375,45 +361,36 @@ def categorize_sentiment(score: float) -> str:
     return "neutral"
 
 def count_topic_frequency(topic: str, documents: Dict) -> int:
-    """Count occurrences of topic in documents"""
+    """Count topic occurrences"""
     count = 0
     topic_lower = topic.lower()
     
-    for doc_data in documents.values():
-        # Check cleaned paragraphs
-        for paragraph in doc_data.get("cleaned_paragraphs", []):
-            if topic_lower in paragraph.lower():
-                count += 1
-        
-        # Check raw paragraphs if available
-        for paragraph in doc_data.get("raw_paragraphs", []):
+    for document_data in documents.values():
+        for paragraph in document_data.get("cleaned_paragraphs", []):
             if topic_lower in paragraph.lower():
                 count += 1
     
-    return max(count, 1)  # Ensure minimum frequency of 1
+    return max(count, 1)
 
 def find_topic_contexts(topic: str, documents: Dict) -> List[Dict[str, Any]]:
-    """Find context paragraphs containing the topic"""
+    """Find context paragraphs for topic"""
     contexts = []
     topic_lower = topic.lower()
     
-    for doc_name, doc_data in documents.items():
-        # Check both cleaned and raw paragraphs
-        paragraphs = doc_data.get("cleaned_paragraphs", []) + doc_data.get("raw_paragraphs", [])
+    for document_name, document_data in documents.items():
+        paragraphs = document_data.get("cleaned_paragraphs", [])
         
         for paragraph in paragraphs:
             if topic_lower in paragraph.lower():
                 contexts.append({
-                    "document": doc_name,
+                    "document": document_name,
                     "text": paragraph,
                     "sentiment": analyze_sentiment(paragraph)
                 })
                 
-                # Limit number of contexts per topic
                 if len(contexts) >= 5:
                     break
     
-    # Sort contexts by sentiment relevance (descending absolute value)
     return sorted(contexts, key=lambda x: abs(x["sentiment"]), reverse=True)
 
 @app.get("/health")
@@ -422,7 +399,6 @@ async def health_check():
     return {
         "status": "healthy",
         "environment": Config.ENVIRONMENT,
-        "version": "1.0.0",
         "timestamp": datetime.now().isoformat()
     }
 
@@ -432,7 +408,7 @@ if __name__ == "__main__":
         "app.main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True if Config.ENVIRONMENT == "development" else False,
+        reload=Config.ENVIRONMENT == "development",
         workers=1,
         log_level="info"
     )

@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+
+{% block head %}
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+<style>
+    .processing-container {
+        max-width: 1200px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+    }
+
+    .status-header {
+        margin-bottom: 2rem;
+        border-bottom: 1px solid #e5e7eb;
+        padding-bottom: 1rem;
+    }
+
+    .status-title {
+        font-size: 1.875rem;
+        font-weight: 600;
+        color: #111827;
+        margin-bottom: 0.5rem;
+    }
+
+    .status-subtitle {
+        color: #6b7280;
+        font-size: 1.125rem;
+    }
+
+    .progress-section {
+        background-color: white;
+        border-radius: 0.5rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .progress-bar-container {
+        background-color: #f3f4f6;
+        border-radius: 9999px;
+        height: 0.5rem;
+        overflow: hidden;
+    }
+
+    .progress-bar {
+        height: 100%;
+        border-radius: 9999px;
+        transition: width 0.5s ease;
+    }
+
+    .progress-bar.processing {
+        background-color: #3b82f6;
+        animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    .progress-bar.complete {
+        background-color: #10b981;
+    }
+
+    .progress-bar.error {
+        background-color: #ef4444;
+    }
+
+    .status-steps {
+        margin-top: 2rem;
+    }
+
+    .step-item {
+        display: flex;
+        align-items: flex-start;
+        padding: 1rem;
+        border-left: 4px solid transparent;
+        margin-bottom: 0.5rem;
+    }
+
+    .step-item.complete {
+        border-left-color: #10b981;
+        background-color: #f0fdf4;
+    }
+
+    .step-item.processing {
+        border-left-color: #3b82f6;
+        background-color: #eff6ff;
+    }
+
+    .step-item.error {
+        border-left-color: #ef4444;
+        background-color: #fef2f2;
+    }
+
+    .step-icon {
+        margin-right: 1rem;
+        flex-shrink: 0;
+    }
+
+    .step-content {
+        flex: 1;
+    }
+
+    .step-message {
+        font-weight: 500;
+        margin-bottom: 0.25rem;
+    }
+
+    .step-timestamp {
+        font-size: 0.875rem;
+        color: #6b7280;
+    }
+
+    .error-section {
+        background-color: #fef2f2;
+        border: 1px solid #fee2e2;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin-top: 1rem;
+    }
+
+    .error-message {
+        color: #dc2626;
+        font-weight: 500;
+    }
+
+    @keyframes pulse {
+        0%, 100% {
+            opacity: 1;
+        }
+        50% {
+            opacity: 0.5;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="processing-container">
+    <div class="status-header">
+        <h1 class="status-title">Document Processing Status</h1>
+        <p class="status-subtitle">Analyzing and extracting insights from your documents</p>
+    </div>
+
+    <!-- Mount point for React processing status component -->
+    <div id="processing-status-root"></div>
+
+    <!-- Fallback content if JavaScript is disabled -->
+    <noscript>
+        <div class="progress-section">
+            <h2>JavaScript Required</h2>
+            <p>Please enable JavaScript to view real-time processing status.</p>
+            
+            <!-- Show static status if available -->
+            {% if processing_logs %}
+                <div class="status-steps">
+                    {% for step in processing_logs.steps %}
+                        <div class="step-item complete">
+                            <div class="step-content">
+                                <div class="step-message">{{ step }}</div>
+                            </div>
+                        </div>
+                    {% endfor %}
+
+                    {% for error in processing_logs.errors %}
+                        <div class="step-item error">
+                            <div class="step-content">
+                                <div class="step-message">{{ error }}</div>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+    </noscript>
+</div>
+
+<script type="module">
+    import { createRoot } from 'react-dom/client';
+    import ProcessingStatus from '/static/js/components/ProcessingStatus.js';
+
+    const processingStatusContainer = document.getElementById('processing-status-root');
+    if (processingStatusContainer) {
+        const root = createRoot(processingStatusContainer);
+        root.render(ProcessingStatus());
+
+        // Poll status periodically
+        const pollStatus = async () => {
+            try {
+                const response = await fetch('/api/upload-status');
+                const data = await response.json();
+                
+                // Redirect to dashboard when complete
+                if (data.processing_complete) {
+                    window.location.href = '/dashboard';
+                }
+            } catch (error) {
+                console.error('Error fetching status:', error);
+            }
+        };
+
+        // Poll every 2 seconds
+        const statusInterval = setInterval(pollStatus, 2000);
+
+        // Cleanup interval on component unmount
+        window.addEventListener('beforeunload', () => {
+            clearInterval(statusInterval);
+        });
+    }
+</script>
+{% endblock %}
