@@ -22,7 +22,7 @@ from app.models.nlp_pipeline import NLPPipeline
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="", tags=["Upload"])
+router = APIRouter(prefix="/upload", tags=["Upload"])
 
 # Define valid file extensions
 VALID_FILE_EXTENSIONS: Set[str] = {
@@ -38,7 +38,7 @@ IGNORED_FILE_PATTERNS: Set[str] = {
     'desktop.ini'
 }
 
-@router.post("/zip")
+@router.post("/zip", name="upload_zip")
 async def upload_zip(file: UploadFile = File(...)):
     """Handle ZIP file upload containing documents for analysis"""
     # Initialize processing logs
@@ -129,7 +129,7 @@ async def upload_zip(file: UploadFile = File(...)):
         # On error, redirect back to upload page where status will be shown
         return RedirectResponse(url="/", status_code=303)
 
-@router.get("/upload-status")
+@router.get("/status", name="upload_status")
 async def get_upload_status() -> Dict[str, Any]:
     """Return current upload and processing status"""
     return {

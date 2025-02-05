@@ -2,8 +2,7 @@
 analyze.py
 
 Router for running the NLP pipeline and handling analysis requests.
-Processes extracted text from files and generates analysis results
-using only the dependencies specified (pdfminer.six, PyMuPDF, python-docx, etc.).
+Processes extracted text from files and generates analysis results.
 """
 
 import os

@@ -1,41 +1,45 @@
 """
 visualize.py
 
-Router for retrieving and formatting analysis results for visualization.
-Handles data preparation for charts, word clouds, and interactive visualizations.
+Enhanced router for retrieving and formatting analysis results for visualization.
+Handles enriched data structure with topic relationships, sentiment analysis,
+and structured summaries.
 """
 
 import os
 import json
 import logging
+import re
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Dict, Any, List, Optional
+from datetime import datetime
 
 from app.log_store import PROCESSING_LOGS, PIPELINE_RESULTS
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="", tags=["Visualize"])
 
 @router.get("/results")
 async def get_visualization_data(
     include_raw: bool = Query(False, description="Include raw text data"),
-    max_topics: int = Query(10, description="Maximum number of topics to return"),
-    max_wordcloud: int = Query(50, description="Maximum number of terms in word cloud"),
-    sentiment_threshold: float = Query(0.2, description="Sentiment significance threshold")
+    max_topics: int = Query(20, description="Maximum number of topics to return"),
+    max_wordcloud: int = Query(100, description="Maximum number of terms in word cloud"),
+    sentiment_threshold: float = Query(0.1, description="Sentiment significance threshold"),
+    min_topic_score: float = Query(0.01, description="Minimum topic relevance score")
 ) -> Dict[str, Any]:
     """
-    Retrieve and format analysis results for visualization.
+    Retrieve and format enhanced analysis results for visualization.
     
     Args:
         include_raw: Whether to include raw text data
         max_topics: Maximum number of topics to return
         max_wordcloud: Maximum number of terms in word cloud
         sentiment_threshold: Threshold for sentiment classification
+        min_topic_score: Minimum topic relevance score
         
     Returns:
-        Formatted visualization data
+        Formatted visualization data with enriched features
     """
     if not PIPELINE_RESULTS:
         raise HTTPException(
@@ -44,190 +48,287 @@ async def get_visualization_data(
         )
 
     try:
-        visualization_data = {
-            "summary": format_summary_data(PIPELINE_RESULTS.get("global_summary", "")),
-            "topics": format_topic_data(
-                PIPELINE_RESULTS.get("global_topics", []),
-                max_topics=max_topics
-            ),
-            "wordcloud": format_wordcloud_data(
-                PIPELINE_RESULTS.get("global_wordcloud_data", {}),
-                max_terms=max_wordcloud
-            ),
-            "sentiment": format_sentiment_data(
-                PIPELINE_RESULTS.get("documents", {}),
-                threshold=sentiment_threshold
-            ),
-            "metadata": PIPELINE_RESULTS.get("metadata", {})
+        # Format summary sections
+        summary_data = format_summary_data(
+            PIPELINE_RESULTS.get("global_summary", {})
+        )
+
+        # Format topic data with relationships
+        topics_data = format_topic_data(
+            PIPELINE_RESULTS.get("global_topics", []),
+            max_topics=max_topics,
+            min_score=min_topic_score
+        )
+
+        # Format word cloud data with sentiment
+        wordcloud_data = format_wordcloud_data(
+            PIPELINE_RESULTS.get("global_wordcloud_data", {}),
+            max_terms=max_wordcloud,
+            sentiment_threshold=sentiment_threshold
+        )
+
+        # Format document data
+        documents_data = format_document_data(
+            PIPELINE_RESULTS.get("documents", {}),
+            include_raw=include_raw
+        )
+
+        # Prepare metadata
+        metadata = prepare_metadata(PIPELINE_RESULTS.get("metadata", {}))
+
+        return {
+            "summary": summary_data,
+            "topics": topics_data,
+            "wordcloud": wordcloud_data,
+            "documents": documents_data,
+            "metadata": metadata
         }
-
-        if include_raw:
-            visualization_data["raw_data"] = {
-                "documents": {
-                    doc_name: {
-                        k: v for k, v in doc_data.items()
-                        if k not in ["raw_paragraphs", "cleaned_paragraphs"]
-                    }
-                    for doc_name, doc_data in PIPELINE_RESULTS.get("documents", {}).items()
-                }
-            }
-
-        return visualization_data
 
     except Exception as error:
         logger.error(f"Error preparing visualization data: {str(error)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(error))
 
-def format_summary_data(summary_text: str) -> Dict[str, Any]:
-    """Format summary text into structured sections"""
-    sections = {
-        "key_threats": [],
-        "current_landscape": [],
-        "defense_strategies": []
-    }
-    
-    # Identify section markers
-    markers = {
-        "key_threats": ["Key Threats:", "Threats:", "Risks:"],
-        "current_landscape": ["Key Findings:", "Overview:", "Current Landscape:"],
-        "defense_strategies": ["Defense Strategies:", "Recommendations:", "Solutions:"]
-    }
-    
-    current_section = "current_landscape"  # Default section
-    
-    for line in summary_text.split('\n'):
-        line = line.strip()
-        if not line:
-            continue
-            
-        # Check if line starts a new section
-        for section, section_markers in markers.items():
-            if any(line.startswith(marker) for marker in section_markers):
-                current_section = section
-                line = line.split(':', 1)[1].strip()
-                break
-                
-        if line:
-            sections[current_section].append(line)
-    
+def format_summary_data(summary: Dict[str, str]) -> Dict[str, Any]:
+    """Format enhanced summary sections with metadata"""
+    if not summary:
+        return {
+            "overview": "No analysis available.",
+            "findings": "No findings available.",
+            "challenges": "No challenges identified.",
+            "solutions": "No solutions proposed."
+        }
+
+    # Extract key metrics if present in the overview
+    metrics_pattern = r'(\d+(?:\.\d+)?%|\d+(?:\.\d+)?x|\d+(?:\.\d+)?-fold)'
+    overview = summary.get("overview", "")
+    metrics = re.findall(metrics_pattern, overview)
+
     return {
-        "sections": sections,
-        "full_text": summary_text
+        "overview": {
+            "text": overview,
+            "metrics": metrics
+        },
+        "findings": {
+            "text": summary.get("findings", "No findings available."),
+            "metrics": re.findall(metrics_pattern, summary.get("findings", ""))
+        },
+        "challenges": {
+            "text": summary.get("challenges", "No challenges identified."),
+            "categories": extract_challenge_categories(summary.get("challenges", ""))
+        },
+        "solutions": {
+            "text": summary.get("solutions", "No solutions proposed."),
+            "approaches": extract_solution_approaches(summary.get("solutions", ""))
+        }
     }
 
-def format_topic_data(topics: List[str], max_topics: int = 10) -> List[Dict[str, Any]]:
-    """Format topic data for visualization"""
+def format_topic_data(topics: List[Dict[str, Any]], max_topics: int = 20, min_score: float = 0.01) -> List[Dict[str, Any]]:
+    """Format enhanced topic data with relationships and metadata"""
+    if not topics:
+        return []
+
+    # Filter and sort topics
+    filtered_topics = [
+        topic for topic in topics
+        if topic.get("score", 0) >= min_score
+    ]
+    sorted_topics = sorted(filtered_topics, key=lambda x: x.get("score", 0), reverse=True)
+    top_topics = sorted_topics[:max_topics]
+
+    # Format each topic
     formatted_topics = []
-    
-    for topic in topics[:max_topics]:
-        # Get topic frequency and sentiment if available
-        topic_data = PIPELINE_RESULTS.get("documents", {})
-        frequency = sum(
-            1 for doc in topic_data.values()
-            if topic in doc.get("paragraph_topics", [])
-        )
-        
-        formatted_topics.append({
-            "text": topic,
-            "frequency": max(frequency, 1),  # Ensure minimum frequency of 1
-            "sentiment": get_topic_sentiment(topic, topic_data)
-        })
-    
+    for topic in top_topics:
+        formatted_topic = {
+            "text": topic["text"],
+            "score": float(topic.get("score", 0)),
+            "frequency": topic.get("frequency", 1),
+            "sentiment": topic.get("sentiment", "neutral"),
+            "category": topic.get("category", "general"),
+            "contexts": [
+                {
+                    "text": ctx["text"][:200],
+                    "sentiment": ctx.get("sentiment", 0)
+                }
+                for ctx in topic.get("contexts", [])[:3]
+            ],
+            "related_terms": topic.get("related_terms", [])[:5],
+            "related_topics": [
+                {
+                    "text": rel["text"],
+                    "strength": float(rel["strength"])
+                }
+                for rel in topic.get("related_topics", [])[:3]
+            ]
+        }
+        formatted_topics.append(formatted_topic)
+
     return formatted_topics
 
-def format_wordcloud_data(wordcloud_data: Dict[str, Any], max_terms: int = 50) -> Dict[str, Dict[str, Any]]:
-    """Format word cloud data for visualization"""
-    if not wordcloud_data:
+def format_wordcloud_data(wordcloud: Dict[str, Any], max_terms: int = 100, sentiment_threshold: float = 0.1) -> Dict[str, Any]:
+    """Format enhanced word cloud data with relationships"""
+    if not wordcloud:
         return {}
-        
+
+    formatted_data = {}
+    
     # Sort terms by frequency
     sorted_terms = sorted(
-        wordcloud_data.items(),
-        key=lambda x: x[1].get("frequency", 0),
+        wordcloud.items(),
+        key=lambda x: x[1].get("frequency", 0) if isinstance(x[1], dict) else x[1],
         reverse=True
     )
-    
-    # Take top N terms
-    return {
-        term: {
-            "frequency": data.get("frequency", 0),
-            "sentiment": data.get("sentiment", 0),
-            "contexts": data.get("contexts", [])[:5]  # Limit to 5 contexts per term
-        }
-        for term, data in sorted_terms[:max_terms]
-    }
 
-def format_sentiment_data(documents: Dict[str, Any], threshold: float = 0.2) -> Dict[str, Any]:
-    """Format sentiment analysis data for visualization"""
-    sentiment_data = {
-        "distribution": {
-            "positive": 0,
-            "negative": 0,
-            "neutral": 0
-        },
-        "by_document": {},
-        "overall_score": 0.0
-    }
-    
-    total_paragraphs = 0
-    total_sentiment = 0.0
-    
+    # Format top terms
+    for term, data in sorted_terms[:max_terms]:
+        if isinstance(data, dict):
+            formatted_data[term] = {
+                "frequency": data.get("frequency", 1),
+                "sentiment": data.get("sentiment", "neutral"),
+                "category": data.get("category", "general"),
+                "related_terms": data.get("related_terms", [])[:5],
+                "contexts": [
+                    {
+                        "text": ctx["text"][:200],
+                        "sentiment": ctx.get("sentiment", 0)
+                    }
+                    for ctx in data.get("contexts", [])[:3]
+                ]
+            }
+        else:
+            # Handle legacy format
+            formatted_data[term] = {
+                "frequency": float(data),
+                "sentiment": "neutral",
+                "category": "general"
+            }
+
+    return formatted_data
+
+def format_document_data(documents: Dict[str, Any], include_raw: bool = False) -> Dict[str, Any]:
+    """Format document data with enhanced features"""
+    formatted_docs = {}
+
     for doc_name, doc_data in documents.items():
-        doc_sentiments = []
-        
-        for sentiment in doc_data.get("paragraph_sentiments", []):
-            polarity = sentiment.get("polarity", 0)
-            total_sentiment += polarity
-            total_paragraphs += 1
-            
-            # Categorize sentiment
-            if polarity > threshold:
-                sentiment_data["distribution"]["positive"] += 1
-                category = "positive"
-            elif polarity < -threshold:
-                sentiment_data["distribution"]["negative"] += 1
-                category = "negative"
-            else:
-                sentiment_data["distribution"]["neutral"] += 1
-                category = "neutral"
-                
-            doc_sentiments.append({
-                "score": polarity,
-                "category": category,
-                "text": sentiment.get("text", "")[:200]  # Limit text length
-            })
-            
-        sentiment_data["by_document"][doc_name] = doc_sentiments
-    
-    if total_paragraphs > 0:
-        sentiment_data["overall_score"] = total_sentiment / total_paragraphs
-    
-    return sentiment_data
+        formatted_doc = {
+            "summary": format_summary_data(doc_data.get("summary", {})),
+            "topics": format_topic_data(doc_data.get("topics", []), max_topics=10),
+            "sentiment_analysis": format_sentiment_data(doc_data.get("sentiments", [])),
+            "concepts": format_concept_data(doc_data.get("concepts", [])),
+            "metadata": {
+                "paragraphs": len(doc_data.get("paragraphs", [])),
+                "status": doc_data.get("status", {})
+            }
+        }
 
-def get_topic_sentiment(topic: str, documents: Dict[str, Any]) -> float:
-    """Calculate average sentiment for a topic"""
-    sentiments = []
+        if include_raw:
+            formatted_doc["paragraphs"] = doc_data.get("paragraphs", [])
+
+        formatted_docs[doc_name] = formatted_doc
+
+    return formatted_docs
+
+def format_sentiment_data(sentiments: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Format enhanced sentiment analysis data"""
+    if not sentiments:
+        return {"overall": "neutral", "distribution": {}, "details": []}
+
+    # Calculate overall sentiment
+    polarities = [s.get("polarity", 0) for s in sentiments]
+    overall_sentiment = sum(polarities) / len(polarities) if polarities else 0
+
+    # Calculate distribution
+    distribution = {
+        "positive": len([s for s in sentiments if s.get("polarity", 0) > 0.1]),
+        "negative": len([s for s in sentiments if s.get("polarity", 0) < -0.1]),
+        "neutral": len([s for s in sentiments if -0.1 <= s.get("polarity", 0) <= 0.1])
+    }
+
+    # Format details
+    details = [
+        {
+            "text": s.get("text", "")[:200],
+            "polarity": s.get("polarity", 0),
+            "subjectivity": s.get("subjectivity", 0),
+            "label": s.get("label", "neutral"),
+            "sentences": s.get("sentences", [])
+        }
+        for s in sentiments
+    ]
+
+    return {
+        "overall": "positive" if overall_sentiment > 0.1 else "negative" if overall_sentiment < -0.1 else "neutral",
+        "overall_score": float(overall_sentiment),
+        "distribution": distribution,
+        "details": details
+    }
+
+def format_concept_data(concepts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Format extracted concepts data"""
+    formatted_concepts = []
     
-    for doc_data in documents.values():
-        for sentiment in doc_data.get("paragraph_sentiments", []):
-            if topic.lower() in sentiment.get("text", "").lower():
-                sentiments.append(sentiment.get("polarity", 0))
-    
-    return sum(sentiments) / len(sentiments) if sentiments else 0.0
+    for concept in concepts:
+        formatted_concepts.append({
+            "text": concept["text"],
+            "type": concept.get("type", "general"),
+            "context": concept.get("context", "")[:200]
+        })
+
+    return formatted_concepts
+
+def extract_challenge_categories(challenges_text: str) -> List[str]:
+    """Extract challenge categories from text"""
+    categories = set()
+    challenge_patterns = {
+        "technical": r"technical|implementation|performance|scaling",
+        "data": r"data quality|data availability|dataset|training data",
+        "resource": r"computational|memory|processing|storage",
+        "methodology": r"approach|method|algorithm|technique"
+    }
+
+    for category, pattern in challenge_patterns.items():
+        if re.search(pattern, challenges_text, re.I):
+            categories.add(category)
+
+    return list(categories) if categories else ["general"]
+
+def extract_solution_approaches(solutions_text: str) -> List[str]:
+    """Extract solution approaches from text"""
+    approaches = set()
+    solution_patterns = {
+        "algorithmic": r"algorithm|method|approach|technique",
+        "architectural": r"architecture|design|structure|framework",
+        "optimization": r"optimize|improve|enhance|tune",
+        "integration": r"integrate|combine|merge|incorporate"
+    }
+
+    for approach, pattern in solution_patterns.items():
+        if re.search(pattern, solutions_text, re.I):
+            approaches.add(approach)
+
+    return list(approaches) if approaches else ["general"]
+
+def prepare_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Prepare enhanced metadata"""
+    return {
+        "document_count": metadata.get("document_count", 0),
+        "total_paragraphs": metadata.get("total_paragraphs", 0),
+        "processing_duration": metadata.get("processing_duration", 0),
+        "start_time": metadata.get("start_time", ""),
+        "completion_time": metadata.get("completion_time", ""),
+        "version": "2.0.0",  # Added version tracking
+        "features": [
+            "enhanced_topics",
+            "sentiment_analysis",
+            "concept_extraction",
+            "relationship_mapping"
+        ]
+    }
 
 @router.get("/download-results")
 async def download_results(
     format: str = Query("json", description="Output format (json/csv)")
 ) -> Dict[str, Any]:
-    """
-    Prepare analysis results for download
-    
-    Args:
-        format: Desired output format (json/csv)
-        
-    Returns:
-        Download URL and metadata
-    """
+    """Prepare analysis results for download"""
     if not PIPELINE_RESULTS:
         raise HTTPException(
             status_code=404,
@@ -235,7 +336,7 @@ async def download_results(
         )
     
     try:
-        timestamp = PROCESSING_LOGS.get("completion_time", "").replace(":", "-")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"analysis_results_{timestamp}.{format}"
         
         # Save results to file
@@ -246,8 +347,7 @@ async def download_results(
             with open(save_path, "w", encoding="utf-8") as f:
                 json.dump(PIPELINE_RESULTS, f, indent=2, ensure_ascii=False)
         else:
-            # Implement CSV export if needed
-            raise HTTPException(status_code=400, detail="CSV format not yet supported")
+            raise HTTPException(status_code=400, detail="Only JSON format is currently supported")
         
         return {
             "download_url": f"/downloads/{filename}",
