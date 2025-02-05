@@ -1,263 +1,257 @@
 """
-topic_modeler.py - Enhanced topic extraction with comprehensive stopwords and improved diversity
+topic_modeler.py - BERT-Based Topic Extraction for Main Ideas
+
+This module uses a BERT-based transformer to embed and hierarchically cluster paragraphs.
+It extracts concise, meaningful topics as complete trigram phrases (after filtering out stopwords),
+combining semantic clustering and syntactic phrase extraction, and returns the top 25 topics.
 """
 
+import torch
+from transformers import AutoTokenizer, AutoModel
+from sklearn.cluster import AgglomerativeClustering
+import numpy as np
+from typing import List, Dict, Any
+import re
 import string
-import nltk
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
-from collections import Counter
-from typing import List, Dict, Set
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.decomposition import NMF
+from collections import Counter, defaultdict
+from spacy.lang.en.stop_words import STOP_WORDS
 
 class TopicModeler:
-   def __init__(self, logs_ref):
-       self.logs = logs_ref
-       # Standard stop phrases 
-       self.stop_phrases = {
-           "et al", "et", "eg", "ie", "etc", "example", "examples",
-           "including", "included", "includes", "include",
-           "particularly", "especially", "specifically", 
-           "usually", "typically", "generally", "mainly",
-           "mostly", "largely", "primarily", "commonly",
-           "furthermore", "moreover", "additionally",
-           "however", "nevertheless", "nonetheless",
-           "therefore", "thus", "hence", "consequently",
-           "meanwhile", "subsequently",
-           "regarding", "concerning", "considering"
-       }
+    def __init__(self, logs_reference: Dict[str, Any]) -> None:
+        """
+        Initialize the Topic Modeler with a transformer-based embedding model.
 
-       try:
-           nltk.download('punkt', quiet=True)
-           nltk.download('stopwords', quiet=True)
-           
-           # Get base NLTK stopwords
-           self.stop_words = set(stopwords.words('english'))
-           
-           # Add common technical/academic words
-           technical_stopwords = {
-               'figure', 'fig', 'table', 'appendix', 'chapter',
-               'paper', 'study', 'research', 'method', 'analysis', 
-               'data', 'results', 'discussion', 'conclusion',
-               'introduction', 'background', 'methodology',
-               'findings', 'abstract', 'keywords', 'references',
-               'et', 'al', 'ie', 'eg', 'cf', 'nb', 'ref'
-           }
-           self.stop_words.update(technical_stopwords)
-           
-           self.logs["steps"].append("TopicModeler initialized with enhanced stopwords")
-           
-       except Exception as error:
-           self.logs["errors"].append(f"Error initializing NLTK resources: {str(error)}")
-           self.stop_words = set()
+        Args:
+            logs_reference: Dictionary for logging.
+        """
+        self.logs = logs_reference
+        if "steps" not in self.logs or not isinstance(self.logs["steps"], list):
+            self.logs["steps"] = []
+        if "errors" not in self.logs or not isinstance(self.logs["errors"], list):
+            self.logs["errors"] = []
+        model_name = "sentence-transformers/all-mpnet-base-v2"
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.model = AutoModel.from_pretrained(model_name)
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.model.to(self.device)
+            self.logs["steps"].append("Initialized topic modeler with all-mpnet-base-v2")
+        except Exception as e:
+            error_msg = f"Error initializing topic modeler: {str(e)}"
+            self.logs["errors"].append(error_msg)
+            raise RuntimeError("Topic modeler initialization failed") from e
 
-   def extract_topics(self, paragraphs: List[str], top_n: int = 5) -> List[str]:
-    """Extract diverse topics using TF-IDF and NMF with enhanced preprocessing."""
-    if not paragraphs:
-        return ["No topics identified."]
+        self.research_terms = {
+            "methodology": {"experiment", "analysis", "evaluation", "methodology"},
+            "findings": {"results", "findings", "performance", "accuracy"},
+            "technology": {"algorithm", "model", "system", "architecture"},
+            "domain": {"finance", "trading", "market", "investment"}
+        }
 
-    document_count = len(paragraphs)
-    if document_count < 1:
-        self.logs["errors"].append("Insufficient documents for topic extraction.")
-        return ["No topics identified."]
+    def extract_topics(self, paragraphs: List[str]) -> List[Dict[str, Any]]:
+        """
+        Dynamically extract topics as concise trigram titles from a list of paragraphs.
+        Combines semantic clustering with syntactic phrase extraction and returns the top 25 topics.
 
-    max_document_frequency = min(0.85, (document_count - 1) / document_count)
-    min_document_frequency = max(1, document_count // 10)
+        Args:
+            paragraphs: List of raw paragraphs.
 
-    self.logs["steps"].append(
-        f"Topic extraction parameters: max_df={max_document_frequency}, min_df={min_document_frequency}"
-    )
+        Returns:
+            A list of topic dictionaries.
+        """
+        try:
+            cleaned_texts = self._preprocess_texts(paragraphs)
+            if not cleaned_texts:
+                return []
+            # Semantic clustering using AgglomerativeClustering
+            embeddings = self._get_text_embeddings(cleaned_texts)
+            clustering = AgglomerativeClustering(
+                n_clusters=None,
+                distance_threshold=0.4,
+                metric='cosine',
+                linkage='complete'
+            )
+            cluster_labels = clustering.fit_predict(embeddings)
+            topics = []
+            unique_labels = set(cluster_labels)
+            for label in unique_labels:
+                if label == -1:
+                    continue  # Skip noise
+                cluster_texts = [cleaned_texts[i] for i in range(len(cleaned_texts)) if cluster_labels[i] == label]
+                if cluster_texts:
+                    topic_title = self._extract_representative_title(cluster_texts)
+                    keywords = self._extract_keywords(cluster_texts)
+                    context = self._select_best_context(cluster_texts)
+                    topics.append({
+                        "title": topic_title,
+                        "type": "semantic",
+                        "keywords": keywords,
+                        "context": context,
+                        "cluster_size": len(cluster_texts),
+                        "paragraphs": cluster_texts
+                    })
+            # Syntactic phrase extraction for additional topics
+            syntactic_topics = self._extract_syntactic_phrases(paragraphs)
+            for topic in syntactic_topics:
+                topics.append({
+                    "title": topic["phrase"],
+                    "type": "syntactic",
+                    "keywords": [],
+                    "context": topic["contexts"][0] if topic["contexts"] else "",
+                    "cluster_size": topic["frequency"],
+                    "paragraphs": topic["contexts"]
+                })
+            topics = self._filter_and_rank_topics(topics)
+            topics = sorted(topics, key=lambda x: x.get("cluster_size", 1), reverse=True)[:25]
+            return topics
+        except Exception as e:
+            self.logs["errors"].append(f"Error extracting topics: {str(e)}")
+            return []
 
-    vectorizer = TfidfVectorizer(
-        max_features=1000,
-        stop_words='english',
-        ngram_range=(1, 3),
-        max_df=max_document_frequency,
-        min_df=min_document_frequency,
-        token_pattern=r'(?u)\b[A-Za-z][A-Za-z-]+[A-Za-z]\b'
-    )
+    def _preprocess_texts(self, texts: List[str]) -> List[str]:
+        """Clean and prepare texts for embedding."""
+        cleaned = []
+        for text in texts:
+            if isinstance(text, str) and text.strip():
+                text = re.sub(r'\[\d+\]|\(\d{4}\)', '', text)
+                text = re.sub(r'http\S+|www\.\S+', '', text)
+                text = re.sub(r'[^\w\s.,!?-]', '', text)
+                text = " ".join(text.split())
+                cleaned.append(text)
+        return cleaned
 
-    try:
-        # Generate TF-IDF matrix
-        tfidf_matrix = vectorizer.fit_transform(paragraphs)
-        
-        # Calculate safe number of components
-        number_of_components = min(
-            top_n * 2,  # Desired number
-            tfidf_matrix.shape[0],  # Number of samples
-            tfidf_matrix.shape[1],  # Number of features
-            len(paragraphs)  # Number of documents
-        )
-        
-        if number_of_components < 1:
-            self.logs["errors"].append("Insufficient data for topic extraction")
-            return ["No topics identified."]
-            
-        # Configure and apply NMF
-        nmf_model = NMF(
-            n_components=number_of_components,
-            random_state=42,
-            init='nndsvd'
-        )
-        nmf_output = nmf_model.fit_transform(tfidf_matrix)
-        
-        # Get feature names from vectorizer
-        feature_names = vectorizer.get_feature_names_out()
-        
-        # Extract topics with filtering
+    def _get_text_embeddings(self, texts: List[str]) -> np.ndarray:
+        """Generate embeddings for texts using the transformer model."""
+        embeddings = []
+        with torch.no_grad():
+            for text in texts:
+                inputs = self.tokenizer(text, truncation=True, max_length=512, return_tensors="pt").to(self.device)
+                outputs = self.model(**inputs)
+                embedding = outputs.last_hidden_state[0, 0, :].cpu().numpy()
+                embeddings.append(embedding)
+        return np.vstack(embeddings)
+
+    def _extract_trigram(self, texts: List[str]) -> str:
+        """
+        Extract an approximate trigram from a list of texts.
+        Tokenizes the combined text, filters out stop words and punctuation,
+        computes trigrams, and returns the most frequent trigram.
+        """
+        combined = " ".join(texts).lower()
+        translator = str.maketrans("", "", string.punctuation)
+        combined = combined.translate(translator)
+        tokens = combined.split()
+        tokens = [t for t in tokens if t not in STOP_WORDS]
+        if len(tokens) < 3:
+            return " ".join(tokens)
+        trigrams = [" ".join(tokens[i:i+3]) for i in range(len(tokens) - 2)]
+        if not trigrams:
+            return ""
+        trigram_counts = Counter(trigrams)
+        most_common, _ = trigram_counts.most_common(1)[0]
+        return most_common
+
+    def _extract_representative_title(self, texts: List[str]) -> str:
+        """
+        Extract a representative title for the topic using an approximate trigram.
+        Ensures that meaningless fragments are removed.
+        """
+        trigram = self._extract_trigram(texts)
+        if trigram and len(trigram.split()) == 3:
+            return trigram
+        first_sentence = texts[0].split('.')[0]
+        return first_sentence[:100] + ('...' if len(first_sentence) > 100 else '')
+
+    def _select_best_context(self, texts: List[str]) -> str:
+        """
+        Select the most representative paragraph as context for the cluster.
+        """
+        return max(texts, key=len)
+
+    def _extract_keywords(self, texts: List[str]) -> List[str]:
+        """
+        Dynamically extract keywords from a list of texts.
+        """
+        combined = " ".join(texts).lower()
+        keywords = set()
+        for term_set in self.research_terms.values():
+            keywords.update({term for term in term_set if term in combined})
+        technical_pattern = r'\b[A-Z][A-Za-z\d]+\b'
+        technical_terms = set(re.findall(technical_pattern, " ".join(texts)))
+        keywords.update(term.lower() for term in technical_terms)
+        return sorted(keywords)
+
+    def _extract_syntactic_phrases(self, texts: List[str]) -> List[Dict[str, Any]]:
+        """
+        Extract topics using syntactic patterns.
+        """
+        patterns = [
+            (r'(\w+(?:\s+\w+){1,3})\s+(?:architecture|system|framework)', "architecture"),
+            (r'(?:propose|present|introduce|develop)\s+(\w+(?:\s+\w+){1,3})\s+(?:method|approach|technique)', "method"),
+            (r'(\w+(?:\s+\w+){1,3})\s+(?:task|problem|challenge)', "task"),
+            (r'(\w+(?:\s+\w+){1,3})\s+(?:model|algorithm|solution)', "technology")
+        ]
         topics = []
-        for topic_index, topic in enumerate(nmf_model.components_):
-            top_features_indices = topic.argsort()[:-8:-1]
-            top_features = [feature_names[index] for index in top_features_indices]
-            
-            filtered_features = []
-            for feature in top_features:
-                if (len(feature) > 2 and 
-                    feature.lower() not in self.stop_words and 
-                    not self._contains_stop_phrase(feature)):
-                    filtered_features.append(feature)
-            
-            if filtered_features:
-                topic_phrase = " ".join(filtered_features[:3])
-                if not self._contains_stop_phrase(topic_phrase):
-                    topics.append(topic_phrase)
-        
-        # Generate additional n-gram topics
-        ngram_topics = self._generate_ngrams(" ".join(paragraphs))
-        
-        # Combine and remove duplicates
-        all_topics = topics + ngram_topics[:top_n]
-        final_topics = self._remove_similar_topics(all_topics)
-        
-        return final_topics[:top_n]
+        for text in texts:
+            for pattern, topic_type in patterns:
+                matches = re.finditer(pattern, text, re.I)
+                for match in matches:
+                    phrase = match.group(1).strip()
+                    if len(phrase.split()) >= 2:
+                        topics.append({
+                            "phrase": phrase,
+                            "pattern": topic_type,
+                            "frequency": 1,
+                            "contexts": [text]
+                        })
+        merged = defaultdict(lambda: {"frequency": 0, "contexts": []})
+        for topic in topics:
+            key = (topic["phrase"], topic["pattern"])
+            merged[key]["frequency"] += 1
+            merged[key]["contexts"].extend(topic["contexts"])
+        return [{"phrase": k[0], "pattern": k[1], "frequency": v["frequency"], "contexts": v["contexts"]}
+                for k, v in merged.items()]
 
-    except Exception as error:
-        self.logs["errors"].append(f"Error in topic extraction: {str(error)}")
-        return self._fallback_topic_extraction(paragraphs, top_n)
+    def _filter_and_rank_topics(self, topics: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Filter and rank topics based on a combined score of coherence and distinctiveness.
+        """
+        if not topics:
+            return []
+        scored_topics = []
+        for topic in topics:
+            coherence = self._calculate_topic_coherence(topic)
+            distinctiveness = self._calculate_distinctiveness(topic, topics)
+            score = coherence * distinctiveness
+            scored_topics.append((topic, score))
+        distinct_topics = self._remove_redundant_topics(scored_topics)
+        return [item[0] for item in distinct_topics]
 
-   def build_wordcloud_data(self, paragraphs: List[str]) -> Dict[str, int]:
-       """Build frequency data for visualization with filtering."""
-       if not paragraphs:
-           return {}
-           
-       text = " ".join(paragraphs).lower()
-       tokens = self._simple_tokenize(text)
-       
-       # Get filtered word frequencies
-       word_frequencies = Counter([
-           token for token in tokens 
-           if len(token) > 3 and 
-           token not in self.stop_words and 
-           not self._is_common_word(token)
-       ])
-       
-       # Get filtered phrase frequencies
-       phrases = self._generate_ngrams(text, min_n=2, max_n=3)
-       phrase_frequencies = Counter(phrases)
-       
-       # Normalize and combine frequencies
-       maximum_word_frequency = max(word_frequencies.values()) if word_frequencies else 1
-       normalized_frequencies = {}
-       
-       # Add normalized word frequencies
-       for word, frequency in word_frequencies.most_common(50):
-           if len(word) > 3 and not self._is_common_word(word):
-               normalized_frequencies[word] = (frequency / maximum_word_frequency) * 100
-       
-       # Add normalized phrase frequencies
-       maximum_phrase_frequency = max(phrase_frequencies.values()) if phrase_frequencies else 1
-       for phrase, frequency in phrase_frequencies.most_common(30):
-           if not self._contains_stop_phrase(phrase):
-               normalized_frequencies[phrase] = (frequency / maximum_phrase_frequency) * 75
-       
-       return dict(sorted(
-           normalized_frequencies.items(), 
-           key=lambda item: item[1], 
-           reverse=True
-       )[:50])
+    def _calculate_topic_coherence(self, topic: Dict[str, Any]) -> float:
+        """Calculate a coherence score based on keywords and cluster size."""
+        num_keywords = len(topic.get("keywords", []))
+        cluster_size = topic.get("cluster_size", 1)
+        return 0.5 * num_keywords + 0.5 * cluster_size
 
-   def _is_common_word(self, word: str) -> bool:
-       """Check if word is too common or uninteresting."""
-       return (
-           word.lower() in self.stop_words or
-           len(word) < 3 or 
-           word.isdigit()
-       )
+    def _calculate_distinctiveness(self, topic: Dict[str, Any], topics: List[Dict[str, Any]]) -> float:
+        """Calculate distinctiveness relative to other topics."""
+        topic_title = topic.get("title", "").lower()
+        similarity_sum = 0.0
+        for other in topics:
+            if other == topic:
+                continue
+            other_title = other.get("title", "").lower()
+            if topic_title in other_title or other_title in topic_title:
+                similarity_sum += 1.0
+        return 1.0 / (1.0 + similarity_sum)
 
-   def _remove_similar_topics(self, topics: List[str]) -> List[str]:
-       """Remove topics that are too similar to each other."""
-       final_topics = []
-       for topic in topics:
-           if not any(self._is_similar(topic, existing) for existing in final_topics):
-               final_topics.append(topic)
-       return final_topics
-
-   def _is_similar(self, topic1: str, topic2: str) -> bool:
-       """Check if two topics are too similar using overlap analysis."""
-       words1 = set(topic1.lower().split())
-       words2 = set(topic2.lower().split())
-       
-       # Check direct containment
-       if words1.issubset(words2) or words2.issubset(words1):
-           return True
-       
-       # Check word overlap
-       overlap = len(words1.intersection(words2))
-       smaller_size = min(len(words1), len(words2))
-       threshold = 0.5 if smaller_size <= 2 else 0.7
-       
-       return overlap >= smaller_size * threshold
-
-   def _fallback_topic_extraction(self, paragraphs: List[str], top_n: int) -> List[str]:
-       """Fallback method for topic extraction using n-grams."""
-       text = " ".join(paragraphs).lower()
-       ngrams = self._generate_ngrams(text)
-       
-       filtered_ngrams = [
-           ngram for ngram in ngrams
-           if not self._contains_stop_phrase(ngram) and
-           not all(word in self.stop_words for word in ngram.split())
-       ]
-       
-       return filtered_ngrams[:top_n]
-
-   def _generate_ngrams(self, text: str, min_n: int = 2, max_n: int = 3) -> List[str]:
-       """Generate n-grams from text with filtering."""
-       tokens = self._simple_tokenize(text)
-       ngrams = []
-       
-       for n in range(min_n, max_n + 1):
-           for index in range(len(tokens) - n + 1):
-               ngram = " ".join(tokens[index:index + n])
-               if (not self._contains_stop_phrase(ngram) and
-                   not all(token in self.stop_words for token in tokens[index:index + n])):
-                   ngrams.append(ngram)
-       
-       return ngrams
-
-   def _simple_tokenize(self, text: str) -> List[str]:
-       """Tokenize text with cleaning and filtering."""
-       text = text.translate(str.maketrans("", "", string.punctuation))
-       tokens = word_tokenize(text.lower())
-       
-       return [
-           token for token in tokens
-           if (len(token) > 1 and
-               token not in self.stop_words and
-               not token.isdigit() and
-               not all(char in string.punctuation for char in token))
-       ]
-
-   def _contains_stop_phrase(self, phrase: str) -> bool:
-       """Check if phrase contains unwanted terms or patterns."""
-       phrase_lower = phrase.lower()
-       
-       if any(stop in phrase_lower for stop in self.stop_phrases):
-           return True
-           
-       words = phrase_lower.split()
-       if (len(words) == 1 and len(phrase_lower) < 3) or all(word in self.stop_words for word in words):
-           return True
-           
-       return False
+    def _remove_redundant_topics(self, scored_topics: List[tuple]) -> List[tuple]:
+        """
+        Remove redundant topics based on similar titles, keeping the highest scored one.
+        """
+        distinct = {}
+        for topic, score in scored_topics:
+            title = topic.get("title", "").lower()
+            if title not in distinct or score > distinct[title][1]:
+                distinct[title] = (topic, score)
+        return list(distinct.values())
