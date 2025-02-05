@@ -1,344 +1,316 @@
 /**
- * dashboard.js
- * Handles all visualizations and interactivity for the NLP analysis dashboard
+ * dashboard.js - Production-Quality Dashboard JavaScript
+ *
+ * This file handles all visualizations and interactivity for the NLP analysis dashboard.
+ * It loads data from the API endpoint, initializes summary panels, a hierarchical treemap for topics,
+ * an enhanced word cloud visualizing trigram frequencies with sentiment coloring,
+ * and sets up dynamic modal pop-ups for context paragraphs triggered from both the treemap and word cloud.
  */
 
-document.addEventListener('DOMContentLoaded', function() {
-    // Configuration
-    const COLORS = {
-        POSITIVE: '#22c55e',
-        NEGATIVE: '#ef4444',
-        NEUTRAL: '#6b7280',
-        BACKGROUND: 'rgba(0,0,0,0)',
-        GRID: '#f1f5f9'
-    };
+const COLORS = {
+    POSITIVE: '#22c55e',
+    NEGATIVE: '#ef4444',
+    NEUTRAL: '#6b7280',
+    BACKGROUND: 'rgba(0,0,0,0)',
+    GRID: '#f1f5f9'
+};
 
-    const LAYOUT_CONFIG = {
-        FONT_FAMILY: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        CHART_MIN_HEIGHT: 400,
-        TOPICS_HEIGHT_PER_ITEM: 50,
-        WORDCLOUD_HEIGHT: 600
-    };
+const LAYOUT_CONFIG = {
+    FONT_FAMILY: 'Segoe UI, Roboto, sans-serif',
+    CHART_MIN_HEIGHT: 400,
+    WORDCLOUD_HEIGHT: 600,
+    TOPICS_HEIGHT_PER_ITEM: 40
+};
 
-    // Load and validate dashboard data
-    let dashboardData = null;
-    try {
-        const dataElement = document.getElementById('dashboardData');
-        if (!dataElement) {
-            throw new Error('Dashboard data element not found');
+class ModalManager {
+    constructor() {
+        this.modal = document.getElementById('insightModal');
+        this.modalTitle = this.modal.querySelector('.modal-title');
+        this.modalBody = this.modal.querySelector('.modal-body');
+        this.setupEventListeners();
+    }
+    setupEventListeners() {
+        const closeButton = this.modal.querySelector('.modal-close');
+        if (closeButton) {
+            closeButton.addEventListener('click', () => this.hideModal());
         }
-        dashboardData = JSON.parse(dataElement.textContent);
-        console.log('Dashboard data loaded successfully');
-    } catch (error) {
-        console.error('Failed to load dashboard data:', error);
-        showError('Failed to load visualization data');
-        return;
+        this.modal.addEventListener('click', (e) => {
+            if (e.target === this.modal) this.hideModal();
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') this.hideModal();
+        });
     }
+    showModal(title, content) {
+        this.modalTitle.textContent = title;
+        this.modalBody.innerHTML = content;
+        this.modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+    hideModal() {
+        this.modal.style.display = 'none';
+        document.body.style.overflow = '';
+    }
+}
 
-    function createTopicsChart() {
-        const topicsElement = document.getElementById('topics-chart');
-        if (!topicsElement || !dashboardData.topics_data?.length) return;
-
+class DashboardManager {
+    constructor() {
+        this.data = null;
+        this.modalManager = new ModalManager();
+        this.contextCache = new Map();
+    }
+    async initialize() {
+        try {
+            const response = await fetch('/api/analysis-results');
+            if (!response.ok) {
+                throw new Error(`API Error: ${response.status}`);
+            }
+            const dashboardData = await response.json();
+            if (!this.validateDashboardData(dashboardData)) {
+                throw new Error('Invalid dashboard data structure');
+            }
+            this.data = dashboardData;
+            this.initializeSummaryPanels();
+            this.initializeTopicsChart();
+            this.initializeWordCloud();
+            this.setupEventListeners();
+        } catch (error) {
+            console.error('Dashboard initialization failed:', error);
+            this.handleInitializationError();
+        }
+    }
+    validateDashboardData(data) {
+        const requiredKeys = ['global_summary', 'global_topics', 'wordcloud_data', 'documents'];
+        return requiredKeys.every(key => key in data);
+    }
+    handleInitializationError() {
+        alert("Failed to load dashboard data after multiple attempts.");
+    }
+    initializeSummaryPanels() {
+        const summaryData = this.data.global_summary || {};
+        ['overview', 'findings', 'challenges', 'solutions'].forEach(section => {
+            const element = document.getElementById(`${section}Section`);
+            if (element) {
+                element.innerHTML = this.formatSummaryContent(summaryData[section]);
+            }
+        });
+    }
+    formatSummaryContent(content) {
+        return content ? content.replace(/\n/g, '<br>') : "No content available.";
+    }
+    initializeTopicsChart() {
+        const topics = this.data.global_topics || [];
+        if (!topics.length) return;
+        const hierarchy = this.buildTopicHierarchy(topics);
         const trace = {
-            y: dashboardData.topics_data.map(topic => topic.text),
-            x: dashboardData.topics_data.map(topic => topic.frequency),
-            type: 'bar',
-            orientation: 'h',
-            marker: {
-                color: dashboardData.topics_data.map(topic => {
-                    if (topic.sentiment === 'positive') return COLORS.POSITIVE;
-                    if (topic.sentiment === 'negative') return COLORS.NEGATIVE;
-                    return COLORS.NEUTRAL;
-                }),
-                opacity: 0.8
-            },
-            hovertemplate: `
-                <b>%{y}</b><br>
-                Frequency: %{x}<br>
-                Sentiment: %{customdata}
-                <extra></extra>
-            `,
-            customdata: dashboardData.topics_data.map(topic => topic.sentiment)
+            type: 'treemap',
+            ids: hierarchy.ids,
+            labels: hierarchy.labels,
+            parents: hierarchy.parents,
+            values: hierarchy.values,
+            textinfo: "label+value",
+            marker: { colors: hierarchy.colors },
+            hovertemplate: '<b>%{label}</b><br>Size: %{value}<br>Parent: %{parent}<extra></extra>'
         };
-
         const layout = {
+            title: 'Topic Hierarchy and Relationships',
             font: { family: LAYOUT_CONFIG.FONT_FAMILY },
-            title: {
-                text: 'Topic Distribution by Sentiment',
-                font: { size: 16 }
-            },
-            showlegend: false,
-            xaxis: {
-                title: 'Frequency',
-                showgrid: true,
-                gridcolor: COLORS.GRID,
-                zeroline: false
-            },
-            yaxis: {
-                automargin: true,
-                tickfont: { size: 12 }
-            },
-            margin: { l: 10, r: 10, t: 40, b: 40 },
-            height: Math.max(
-                LAYOUT_CONFIG.CHART_MIN_HEIGHT,
-                dashboardData.topics_data.length * LAYOUT_CONFIG.TOPICS_HEIGHT_PER_ITEM
-            ),
-            plot_bgcolor: COLORS.BACKGROUND,
-            paper_bgcolor: COLORS.BACKGROUND
+            height: Math.max(LAYOUT_CONFIG.CHART_MIN_HEIGHT, hierarchy.labels.length * LAYOUT_CONFIG.TOPICS_HEIGHT_PER_ITEM),
+            margin: { l: 0, r: 0, b: 0, t: 40 },
+            paper_bgcolor: 'rgba(0,0,0,0)',
+            plot_bgcolor: 'rgba(0,0,0,0)'
         };
-
-        Plotly.newPlot('topics-chart', [trace], layout, {
-            responsive: true,
-            displayModeBar: false
-        }).then(() => {
-            topicsElement.on('plotly_click', data => {
-                const topicData = dashboardData.topics_data[data.points[0].pointIndex];
-                if (topicData) showTopicDetails(topicData);
+        const chartElement = document.getElementById('topics-chart');
+        Plotly.newPlot(chartElement, [trace], layout, { responsive: true });
+        chartElement.on('plotly_click', (data) => {
+            const point = data.points[0];
+            const topic = this.findTopicByTitle(point.label);
+            if (topic) {
+                this.showTopicModal(topic);
+            }
+        });
+    }
+    buildTopicHierarchy(topicsData) {
+        const ids = [];
+        const labels = [];
+        const parents = [];
+        const values = [];
+        const colors = [];
+        topicsData.forEach(topic => {
+            ids.push(topic.title);
+            labels.push(topic.title);
+            parents.push(topic.parent || "");
+            values.push(topic.cluster_size || 1);
+            colors.push(COLORS.NEUTRAL);
+        });
+        return { ids, labels, parents, values, colors };
+    }
+    initializeWordCloud() {
+        const wordData = this.data.wordcloud_data || {};
+        if (Object.keys(wordData).length === 0) return;
+        const cloudElement = document.getElementById('wordcloud-chart');
+        if (!cloudElement) return;
+        const wordsArray = Object.entries(wordData)
+            .map(([word, data]) => ({
+                text: word.length > 30 ? word.substring(0, 30) + '...' : word,
+                value: typeof data === 'number' ? data : data.frequency || 1,
+                sentiment: (typeof data === 'object' && data.sentiment) || 'neutral',
+                category: (typeof data === 'object' && data.category) || 'general'
+            }))
+            .filter(w => w.text.length > 2);
+        const categoryGroups = {};
+        wordsArray.forEach(word => {
+            if (!categoryGroups[word.category]) {
+                categoryGroups[word.category] = [];
+            }
+            categoryGroups[word.category].push(word);
+        });
+        const traces = [];
+        let yOffset = 0;
+        Object.entries(categoryGroups).forEach(([category, words]) => {
+            const trace = {
+                x: words.map((_, i) => (i % 5) * 20),
+                y: words.map((_, i) => yOffset + Math.floor(i / 5) * 20),
+                mode: 'text',
+                text: words.map(w => w.text),
+                textfont: {
+                    size: words.map(w => Math.max(12, (w.value / Math.max(...wordsArray.map(w => w.value))) * 40)),
+                    color: words.map(w => w.sentiment === 'positive' ? COLORS.POSITIVE :
+                                            w.sentiment === 'negative' ? COLORS.NEGATIVE : COLORS.NEUTRAL)
+                },
+                name: category,
+                hoverinfo: 'text',
+                hovertext: words.map(w => `${w.text}\nFrequency: ${w.value}\nCategory: ${w.category}`)
+            };
+            traces.push(trace);
+            yOffset += Math.ceil(words.length / 5) * 25;
+        });
+        const layout = {
+            title: 'Word Frequency & Sentiment by Category',
+            showlegend: true,
+            height: Math.max(LAYOUT_CONFIG.WORDCLOUD_HEIGHT, yOffset + 100),
+            margin: { t: 40, b: 40 },
+            xaxis: { showgrid: false, zeroline: false, showticklabels: false },
+            yaxis: { showgrid: false, zeroline: false, showticklabels: false }
+        };
+        Plotly.newPlot(cloudElement, traces, layout, { responsive: true }).then(() => {
+            cloudElement.on('plotly_click', (data) => {
+                const point = data.points[0];
+                const topic = this.findTopicByTitle(point.text);
+                if (topic) {
+                    this.showTopicModal(topic);
+                }
             });
         });
     }
-
-    function createWordCloud() {
-        const wordcloudElement = document.getElementById('wordcloud-chart');
-        if (!wordcloudElement || !dashboardData.wordcloud_data) return;
-
-        const words = Object.entries(dashboardData.wordcloud_data)
-            .map(([text, data]) => ({
-                text,
-                value: data.frequency,
-                sentiment: data.sentiment,
-                contexts: data.contexts
-            }));
-
-        const maxValue = Math.max(...words.map(word => word.value));
-
-        const trace = {
-            x: words.map(() => Math.random() * 100),
-            y: words.map(() => Math.random() * 100),
-            mode: 'text',
-            text: words.map(word => word.text),
-            textfont: {
-                size: words.map(word => 
-                    Math.max(12, Math.min((word.value / maxValue) * 60, 60))
-                ),
-                color: words.map(word => {
-                    if (word.sentiment > 0.1) return COLORS.POSITIVE;
-                    if (word.sentiment < -0.1) return COLORS.NEGATIVE;
-                    return COLORS.NEUTRAL;
-                }),
-                family: LAYOUT_CONFIG.FONT_FAMILY
-            },
-            hoverinfo: 'text',
-            hovertext: words.map(word => 
-                `${word.text}\nFrequency: ${word.value}\nSentiment: ${word.sentiment.toFixed(2)}`
-            )
-        };
-
-        const layout = {
-            font: { family: LAYOUT_CONFIG.FONT_FAMILY },
-            title: {
-                text: 'Word Frequency & Sentiment Analysis',
-                font: { size: 16 }
-            },
-            showlegend: false,
-            xaxis: {
-                showgrid: false,
-                zeroline: false,
-                showticklabels: false
-            },
-            yaxis: {
-                showgrid: false,
-                zeroline: false,
-                showticklabels: false
-            },
-            margin: { l: 10, r: 10, t: 40, b: 10 },
-            height: LAYOUT_CONFIG.WORDCLOUD_HEIGHT,
-            plot_bgcolor: COLORS.BACKGROUND,
-            paper_bgcolor: COLORS.BACKGROUND
-        };
-
-        Plotly.newPlot('wordcloud-chart', [trace], layout, {
-            responsive: true,
-            displayModeBar: false
-        }).then(() => {
-            wordcloudElement.on('plotly_click', data => {
-                const word = data.points[0].text;
-                const wordData = dashboardData.wordcloud_data[word];
-                if (wordData) showWordDetails(word, wordData);
-            });
-        });
-    }
-
-    function showTopicDetails(topicData) {
-        const contexts = findContexts(topicData.text);
-        const modal = createModal({
-            title: `Topic Analysis: "${topicData.text}"`,
-            content: `
-                <div class="stats-grid">
-                    <div class="stat-item">
-                        <div class="stat-label">Frequency</div>
-                        <div class="stat-value">${topicData.frequency} occurrences</div>
-                    </div>
-                    <div class="stat-item ${getSentimentClass(topicData.sentiment)}">
-                        <div class="stat-label">Sentiment</div>
-                        <div class="stat-value">${topicData.sentiment}</div>
-                    </div>
-                </div>
-
-                <div class="contexts-section">
-                    <h4>Source Excerpts</h4>
-                    ${contexts.map(context => `
-                        <div class="context-item">
-                            <div class="context-header">
-                                <span class="context-document">${context.document}</span>
-                                <span class="context-sentiment ${getSentimentClass(context.sentiment)}">
-                                    ${context.sentiment.toFixed(2)}
-                                </span>
-                            </div>
-                            <div class="context-text">
-                                ${highlightText(context.text, topicData.text)}
-                            </div>
-                        </div>
-                    `).join('')}
-                </div>
-            `
-        });
-        
-        document.body.appendChild(modal);
-    }
-
-    function showWordDetails(word, wordData) {
-        const contexts = wordData.contexts || findContexts(word);
-        const modal = createModal({
-            title: `Word Analysis: "${word}"`,
-            content: `
-                <div class="stats-grid">
-                    <div class="stat-item">
-                        <div class="stat-label">Frequency</div>
-                        <div class="stat-value">${wordData.frequency} occurrences</div>
-                    </div>
-                    <div class="stat-item ${getSentimentClass(wordData.sentiment)}">
-                        <div class="stat-label">Sentiment</div>
-                        <div class="stat-value">${wordData.sentiment.toFixed(2)}</div>
-                    </div>
-                </div>
-
-                <div class="contexts-section">
-                    <h4>Examples in Context</h4>
-                    ${contexts.map(context => `
-                        <div class="context-item">
-                            <div class="context-header">
-                                <span class="context-document">${context.document}</span>
-                                <span class="context-sentiment ${getSentimentClass(context.sentiment)}">
-                                    ${context.sentiment.toFixed(2)}
-                                </span>
-                            </div>
-                            <div class="context-text">
-                                ${highlightText(context.text, word)}
-                            </div>
-                        </div>
-                    `).join('')}
-                </div>
-            `
-        });
-        
-        document.body.appendChild(modal);
-    }
-
-    function findContexts(searchTerm) {
-        const contexts = [];
-        if (!dashboardData.documents) return contexts;
-
-        const searchTermLower = searchTerm.toLowerCase();
-        
-        // Search through all documents
-        for (const [docName, docData] of Object.entries(dashboardData.documents)) {
-            const paragraphs = docData.cleaned_paragraphs || [];
-            const sentiments = docData.paragraph_sentiments || [];
-            
-            paragraphs.forEach((paragraph, index) => {
-                if (paragraph.toLowerCase().includes(searchTermLower)) {
-                    contexts.push({
-                        document: docName,
-                        text: paragraph,
-                        sentiment: sentiments[index]?.polarity || 0
-                    });
+    setupEventListeners() {
+        const topicsList = document.getElementById('topics-list');
+        if (topicsList) {
+            topicsList.addEventListener('click', (e) => {
+                const topicItem = e.target.closest('.topic-item');
+                if (topicItem) {
+                    const topicId = topicItem.dataset.topicId;
+                    const topic = this.findTopicByTitle(topicId);
+                    if (topic) {
+                        this.showTopicModal(topic);
+                    }
                 }
             });
         }
-        
-        // Sort by sentiment strength and limit results
-        return contexts
-            .sort((a, b) => Math.abs(b.sentiment) - Math.abs(a.sentiment))
-            .slice(0, 5);
     }
-
-    function getSentimentClass(score) {
-        if (score < -0.1) return 'negative';
-        if (score > 0.1) return 'positive';
-        return 'neutral';
+    findTopicByTitle(title) {
+        const cleanTitle = title.replace(/<[^>]*>/g, '').split('\n')[0].trim();
+        return this.data.global_topics.find(t => t.title === cleanTitle);
     }
-
-    function highlightText(text, searchTerm) {
-        if (!text || !searchTerm) return text;
-        const regex = new RegExp(`(${searchTerm})`, 'gi');
-        return text.replace(regex, '<mark>$1</mark>');
+    showTopicModal(topic) {
+        if (this.contextCache.has(topic.title)) {
+            const cachedContent = this.contextCache.get(topic.title);
+            this.modalManager.showModal(`Topic: ${topic.title}`, cachedContent);
+            return;
+        }
+        const modalContent = this.formatModalContent(topic);
+        this.contextCache.set(topic.title, modalContent);
+        this.modalManager.showModal(`Topic: ${topic.title}`, modalContent);
     }
-
-    function createModal({ title, content }) {
-        const modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.innerHTML = `
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h3 class="modal-title">${title}</h3>
-                    <button class="modal-close" aria-label="Close">&times;</button>
+    formatModalContent(topic) {
+        const contexts = topic.paragraphs || [];
+        const keyPhrases = this.extractKeyPhrases(contexts);
+        return `
+            <div class="topic-modal-content">
+                <div class="topic-header mb-4 border-b pb-4">
+                    <h3 class="text-xl font-bold mb-2">${topic.title}</h3>
+                    <div class="flex items-center gap-3 text-sm text-gray-600">
+                        <span>Type: ${topic.type || 'General'}</span>
+                        <span>Size: ${topic.cluster_size || 0}</span>
+                    </div>
                 </div>
-                <div class="modal-body">${content}</div>
+                ${this.formatKeyPhrases(keyPhrases)}
+                <div class="context-paragraphs mt-6 space-y-6">
+                    <h4 class="text-lg font-semibold mb-3">Related Paragraphs</h4>
+                    ${contexts.map((context, idx) => this.formatContextParagraph(context, topic, idx + 1)).join('')}
+                </div>
             </div>
         `;
-
-        // Event handlers
-        const closeButton = modal.querySelector('.modal-close');
-        closeButton.onclick = () => modal.remove();
-        
-        modal.onclick = event => {
-            if (event.target === modal) modal.remove();
-        };
-
-        // Keyboard handler
-        document.addEventListener('keydown', function closeOnEscape(event) {
-            if (event.key === 'Escape') {
-                modal.remove();
-                document.removeEventListener('keydown', closeOnEscape);
-            }
-        });
-
-        return modal;
     }
-
-    function showError(message) {
-        const errorElement = document.createElement('div');
-        errorElement.className = 'error-message';
-        errorElement.textContent = message;
-
-        document.querySelectorAll('.chart-container').forEach(container => {
-            container.innerHTML = '';
-            container.appendChild(errorElement.cloneNode(true));
-        });
+    formatContextParagraph(paragraph, topic, index) {
+        const highlightedText = this.highlightTopicMentions(paragraph, topic.title);
+        const relevance = this.computeRelevance(paragraph, topic.title);
+        return `
+            <div class="context-paragraph bg-gray-50 rounded-lg p-4">
+                <div class="context-header flex justify-between items-center mb-2">
+                    <span class="text-sm font-medium text-gray-700">Paragraph ${index}</span>
+                    <span class="text-sm text-gray-500">Relevance: ${(relevance * 100).toFixed(1)}%</span>
+                </div>
+                <div class="context-text prose max-w-none text-gray-800">
+                    ${highlightedText}
+                </div>
+            </div>
+        `;
     }
+    highlightTopicMentions(text, topic) {
+        const escapedTopic = topic.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`(${escapedTopic})`, 'gi');
+        return text.replace(regex, '<mark class="bg-yellow-100 px-1 rounded">$1</mark>');
+    }
+    extractKeyPhrases(contexts) {
+        const phrases = new Set();
+        const patterns = [
+            /\b\w+\s+(?:method|approach|algorithm|system|framework)\b/gi,
+            /\b(?:propose|present|develop)\s+\w+(?:\s+\w+){0,2}\b/gi
+        ];
+        contexts.forEach(context => {
+            patterns.forEach(pattern => {
+                const matches = context.match(pattern);
+                if (matches) {
+                    matches.forEach(match => phrases.add(match));
+                }
+            });
+        });
+        return Array.from(phrases);
+    }
+    formatKeyPhrases(phrases) {
+        if (!phrases.length) return '';
+        return `
+            <div class="key-phrases mt-4">
+                <h4 class="text-sm font-medium text-gray-700 mb-2">Key Phrases</h4>
+                <div class="flex flex-wrap gap-2">
+                    ${phrases.map(phrase => `
+                        <span class="inline-block px-2 py-1 text-sm bg-gray-100 text-gray-700 rounded">
+                            ${phrase}
+                        </span>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
+    computeRelevance(text, topic) {
+        const termCount = (text.match(new RegExp(topic, 'gi')) || []).length;
+        const words = text.split(/\s+/).length;
+        return Math.min(termCount / (words / 10), 1);
+    }
+}
 
-    // Initialize visualizations
-    createTopicsChart();
-    createWordCloud();
-
-    // Handle window resizing
-    let resizeTimeout;
-    window.addEventListener('resize', () => {
-        clearTimeout(resizeTimeout);
-        resizeTimeout = setTimeout(() => {
-            createTopicsChart();
-            createWordCloud();
-        }, 250);
-    });
+const dashboard = new DashboardManager();
+document.addEventListener('DOMContentLoaded', () => {
+    dashboard.initialize();
 });
