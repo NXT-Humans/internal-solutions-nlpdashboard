@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block head %}
+<!-- Include any additional CSS specific to contextual modals -->
+<style>
+    .modal-container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 24px;
+    }
+    .modal-header-section {
+        border-bottom: 2px solid #e5e7eb;
+        margin-bottom: 16px;
+    }
+    .modal-header-section h1 {
+        font-size: 2rem;
+        color: #1f2937;
+        margin: 0;
+    }
+    .contextual-modal {
+        background-color: #f9fafb;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 24px;
+    }
+    .contextual-modal h2 {
+        font-size: 1.5rem;
+        color: #1f2937;
+        margin-bottom: 8px;
+    }
+    .contextual-modal h3 {
+        font-size: 1.125rem;
+        color: #374151;
+        margin-bottom: 4px;
+    }
+    .context-text {
+        font-size: 1rem;
+        line-height: 1.6;
+        color: #4b5563;
+        margin-bottom: 8px;
+    }
+    .context-sentiment {
+        font-size: 0.9rem;
+        color: #6b7280;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="modal-container">
+    <div class="modal-header-section">
+        <h1>Contextual Modal Information</h1>
+        <p>Below is the detailed contextual data extracted from the analyzed documents.</p>
+    </div>
+    {% if modal_data and modal_data|length > 0 %}
+        {% for context_item in modal_data %}
+            <div class="contextual-modal">
+                <h2>Document: {{ context_item.document }}</h2>
+                <h3>Paragraph {{ context_item.index }}</h3>
+                <div class="context-text">
+                    {{ context_item.text }}
+                </div>
+                <div class="context-sentiment">
+                    Sentiment: {{ context_item.sentiment }}
+                </div>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p>No contextual data available.</p>
+    {% endif %}
+</div>
+{% endblock %}

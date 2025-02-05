@@ -3,105 +3,103 @@
 {% block head %}
 <!-- Load Plotly -->
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-<!-- Load dashboard JavaScript -->
+<!-- Load Dashboard JavaScript -->
 <script src="{{ url_for('static', path='js/dashboard.js') }}" defer></script>
 
 <style>
-    /* Dashboard Layout */
+    /* Overall container */
     .dashboard-container {
         max-width: 1400px;
         margin: 0 auto;
         padding: 24px;
     }
-
     .page-header {
         margin-bottom: 24px;
     }
-
     .main-title {
         color: #1a56db;
         font-size: 2rem;
         margin-bottom: 0.5rem;
     }
-
     .subtitle {
         color: #6b7280;
         font-size: 1.1rem;
     }
-
-    /* Summary Section */
+    /* Summary grid */
     .summary-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
         gap: 24px;
         margin-bottom: 32px;
     }
-
     .summary-card {
         background: white;
         border-radius: 12px;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         padding: 24px;
-        height: 100%;
+        transition: transform 0.2s ease-in-out;
     }
-
-    .summary-card.threats {
+    .summary-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .summary-card.overview {
+        border-left: 4px solid #06b6d4;
+    }
+    .summary-card.findings {
+        border-left: 4px solid #f97316;
+    }
+    .summary-card.challenges {
         border-left: 4px solid #ef4444;
     }
-
-    .summary-card.landscape {
-        border-left: 4px solid #6b7280;
-    }
-
-    .summary-card.strategies {
+    .summary-card.solutions {
         border-left: 4px solid #22c55e;
     }
-
     .card-title {
         font-size: 1.25rem;
         font-weight: 600;
         color: #1f2937;
         margin-bottom: 16px;
     }
-
-    /* Visualization Grid */
+    .card-content {
+        color: #4b5563;
+        line-height: 1.6;
+        white-space: pre-wrap;
+    }
+    .no-content {
+        color: #9ca3af;
+        font-style: italic;
+    }
+    /* Visualization grid */
     .visualization-grid {
         display: grid;
         grid-template-columns: 1fr 2fr;
         gap: 24px;
         margin-bottom: 32px;
     }
-
     @media (max-width: 1024px) {
         .visualization-grid {
             grid-template-columns: 1fr;
         }
     }
-
     .visualization-card {
         background: white;
         border-radius: 12px;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         padding: 24px;
-        height: 100%;
     }
-
-    /* Chart Containers */
     .chart-container {
         min-height: 400px;
         width: 100%;
     }
-
     .wordcloud-container {
         min-height: 600px;
         width: 100%;
     }
-
-    /* Topics List */
+    /* Topics list */
     .topics-list {
         margin-top: 20px;
     }
-
     .topic-item {
         display: flex;
         justify-content: space-between;
@@ -111,32 +109,64 @@
         border-radius: 8px;
         background: #f9fafb;
         cursor: pointer;
-        transition: all 0.2s ease;
+        transition: transform 0.2s ease;
     }
-
     .topic-item:hover {
         transform: translateX(8px);
         background: #f3f4f6;
     }
-
-    .topic-item.positive { border-left: 4px solid #22c55e; }
-    .topic-item.negative { border-left: 4px solid #ef4444; }
-    .topic-item.neutral { border-left: 4px solid #6b7280; }
-
-    /* Modals */
+    .topic-item.positive {
+        border-left: 4px solid #22c55e;
+    }
+    .topic-item.negative {
+        border-left: 4px solid #ef4444;
+    }
+    .topic-item.neutral {
+        border-left: 4px solid #6b7280;
+    }
+    .topic-text {
+        font-weight: 500;
+        color: #1f2937;
+    }
+    .topic-frequency {
+        background: #e5e7eb;
+        padding: 2px 8px;
+        border-radius: 9999px;
+        font-size: 0.875rem;
+        color: #4b5563;
+    }
+    /* Processing logs */
+    .logs-container {
+        margin-top: 32px;
+    }
+    .log-step {
+        background: #e3f2fd;
+        border-left: 4px solid #2196f3;
+        padding: 8px 12px;
+        margin-bottom: 8px;
+        border-radius: 0 4px 4px 0;
+    }
+    .log-error {
+        background: #fee2e2;
+        border-left: 4px solid #ef4444;
+        padding: 8px 12px;
+        margin-bottom: 8px;
+        border-radius: 0 4px 4px 0;
+        color: #991b1b;
+    }
+    /* Modal styles */
     .modal {
         position: fixed;
         top: 0;
         left: 0;
         width: 100%;
         height: 100%;
-        background: rgba(0, 0, 0, 0.5);
+        background: rgba(0,0,0,0.5);
         display: flex;
         justify-content: center;
         align-items: center;
         z-index: 1000;
     }
-
     .modal-content {
         background: white;
         border-radius: 12px;
@@ -145,7 +175,6 @@
         max-height: 90vh;
         overflow-y: auto;
     }
-
     .modal-header {
         padding: 16px 24px;
         border-bottom: 1px solid #e5e7eb;
@@ -153,18 +182,15 @@
         justify-content: space-between;
         align-items: center;
     }
-
     .modal-body {
         padding: 24px;
     }
-
     .modal-title {
         font-size: 1.25rem;
         font-weight: 600;
         color: #1f2937;
         margin: 0;
     }
-
     .modal-close {
         background: none;
         border: none;
@@ -174,163 +200,77 @@
         padding: 4px;
         line-height: 1;
     }
-
-    /* Context Items */
-    .context-item {
+    .modal-close:hover {
+        color: #1f2937;
+    }
+    /* Context paragraphs in modal */
+    .context-paragraph {
         background: #f9fafb;
         border-radius: 8px;
         padding: 16px;
         margin-bottom: 16px;
     }
-
     .context-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
         margin-bottom: 8px;
     }
-
     .context-document {
         font-weight: 600;
         color: #4b5563;
     }
-
     .context-text {
         line-height: 1.6;
         color: #1f2937;
     }
-
     mark {
         background: #fef3c7;
         color: #92400e;
         padding: 0 2px;
         border-radius: 2px;
     }
-
-    /* Stats Grid */
-    .stats-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-        gap: 16px;
-        margin-bottom: 24px;
-        background: #f9fafb;
-        padding: 16px;
-        border-radius: 8px;
-    }
-
-    .stat-item {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-    }
-
-    .stat-label {
-        font-size: 0.875rem;
-        color: #6b7280;
-    }
-
-    .stat-value {
-        font-size: 1.125rem;
-        font-weight: 600;
-        color: #1f2937;
-    }
-
-    /* Loading States */
-    .loading {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        min-height: 200px;
-    }
-
-    .loading::after {
-        content: "Loading...";
-        color: #6b7280;
-    }
-
-    /* Error States */
-    .error-message {
-        background: #fee2e2;
-        border-left: 4px solid #ef4444;
-        color: #991b1b;
-        padding: 16px;
-        border-radius: 8px;
-        margin: 16px 0;
-    }
-
-    /* Processing Logs */
-    .logs-container {
-        margin-top: 32px;
-    }
-
-    .log-step {
-        background: #e3f2fd;
-        border-left: 4px solid #2196f3;
-        padding: 8px 12px;
-        margin-bottom: 8px;
-        border-radius: 0 4px 4px 0;
-    }
-
-    .log-error {
-        background: #fee2e2;
-        border-left: 4px solid #ef4444;
-        padding: 8px 12px;
-        margin-bottom: 8px;
-        border-radius: 0 4px 4px 0;
-        color: #991b1b;
-    }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="dashboard-container">
-    <!-- Header -->
     <header class="page-header">
-      <h1 class="main-title">{{ title }}</h1>
-      <p class="subtitle">{{ subtitle }}</p>
+        <h1 class="main-title">{{ title | default("Research Analysis Dashboard") }}</h1>
+        <p class="subtitle">{{ subtitle | default("Document Analysis Results and Insights") }}</p>
     </header>
 
-    <!-- Summary Grid -->
+    <!-- Summary Panels -->
     <div class="summary-grid">
-        <div class="summary-card threats">
-            <h2 class="card-title">Key Threats</h2>
-            <div class="card-content">
-                {{ key_threats | safe }}
-            </div>
+        <div class="summary-card overview">
+            <h2 class="card-title">Overview</h2>
+            <div class="card-content" id="overviewSection">Loading overview...</div>
         </div>
-        <div class="summary-card landscape">
-            <h2 class="card-title">Current Landscape</h2>
-            <div class="card-content">
-                {{ current_landscape | safe }}
-            </div>
+        <div class="summary-card findings">
+            <h2 class="card-title">Key Findings</h2>
+            <div class="card-content" id="findingsSection">Loading findings...</div>
         </div>
-        <div class="summary-card strategies">
-            <h2 class="card-title">Defense Strategies</h2>
-            <div class="card-content">
-                {{ defense_strategies | safe }}
-            </div>
+        <div class="summary-card challenges">
+            <h2 class="card-title">Primary Challenges</h2>
+            <div class="card-content" id="challengesSection">Loading challenges...</div>
+        </div>
+        <div class="summary-card solutions">
+            <h2 class="card-title">Strategic Solutions</h2>
+            <div class="card-content" id="solutionsSection">Loading solutions...</div>
         </div>
     </div>
 
     <!-- Visualization Grid -->
     <div class="visualization-grid">
-        <!-- Topics Analysis -->
         <div class="visualization-card">
             <h2 class="card-title">Key Topics Analysis</h2>
             <div id="topics-chart" class="chart-container">
                 <div class="loading"></div>
             </div>
-            <div class="topics-list">
-                {% for topic in topics_data %}
-                    <div class="topic-item {{ topic.sentiment }}" data-topic="{{ topic.text }}">
-                        <span class="topic-text">{{ topic.text }}</span>
-                        <span class="topic-frequency">{{ topic.frequency }}</span>
-                    </div>
-                {% endfor %}
+            <div class="topics-list" id="topics-list">
+                <!-- Topic items injected by dashboard.js -->
             </div>
         </div>
-
-        <!-- Word Cloud -->
         <div class="visualization-card">
             <h2 class="card-title">Word Frequency Analysis</h2>
             <div id="wordcloud-chart" class="wordcloud-container">
@@ -351,14 +291,36 @@
         {% endfor %}
     </div>
     {% endif %}
+
+    <!-- Modal for Contextual Paragraphs -->
+    <div id="insightModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">Details</h3>
+                <button class="modal-close" onclick="dashboard.modalManager.hideModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Content injected by dashboard.js -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="dashboard.modalManager.hideModal()">Close</button>
+            </div>
+        </div>
+    </div>
 </div>
 
-<!-- Data for JavaScript -->
+<!-- JSON Data for Dashboard -->
 <script id="dashboardData" type="application/json">
-    {
-        "wordcloud_data": {{ wordcloud_data | tojson }},
-        "topics_data": {{ topics_data | tojson }},
-        "documents": {{ documents | tojson }}
+{{ {
+    "wordcloud_data": wordcloud_data | default({}) | tojson,
+    "topics_data": topics_data | default([]) | tojson,
+    "documents": documents | default({}) | tojson,
+    "summary_data": summary_data | default({}) | tojson,
+    "metadata": {
+        "document_count": documents | default({}) | length,
+        "total_topics": topics_data | default([]) | length,
+        "total_words": wordcloud_data | default({}) | length
     }
+} | tojson }}
 </script>
 {% endblock %}
